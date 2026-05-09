@@ -1,0 +1,1102 @@
+{
+  "name": "Price Optimazation Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger (Every 6h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        720,
+        208
+      ],
+      "id": "bab4a37f-63f1-45c1-bd69-5d66fc757d66",
+      "notes": "Runs analysis every 6 hours. Adjust as needed."
+    },
+    {
+      "parameters": {
+        "path": "pricing-agent/run",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook Manual Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        720,
+        16
+      ],
+      "id": "5b1fc209-b20e-4802-98ce-8495e06d6ec9",
+      "webhookId": "23416b44-42bf-4d15-8f7d-1ad40369d038",
+      "notes": "POST /pricing-agent/run with optional body: { product_id, override_price }"
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 1: SEED INTERNAL SALES & PRODUCT DATA\n// In production: replace with DB query, Google Sheets, or CRM API\n// ============================================================\n\nconst productData = {\n  product_id: $json.body?.product_id || 'PROD-001',\n  product_name: $json.body?.product_name || 'SaaS Pro Plan',\n  current_price: parseFloat($json.body?.current_price || 49.00),\n  cogs: parseFloat($json.body?.cogs || 12.00),           // Cost of Goods Sold\n  target_margin_pct: parseFloat($json.body?.target_margin || 0.55), // 55% target\n  min_acceptable_margin: 0.30,                            // floor\n  currency: $json.body?.currency || 'USD',\n\n  // Historical sales data (last 90 days by price point)\n  sales_history: [\n    { price: 39.00, units_sold: 420, period_days: 30, traffic: 8200, conversions: 420 },\n    { price: 45.00, units_sold: 310, period_days: 30, traffic: 7900, conversions: 310 },\n    { price: 49.00, units_sold: 275, period_days: 30, traffic: 8100, conversions: 275 }\n  ],\n\n  // Current demand signals\n  demand_signals: {\n    monthly_traffic: 8100,\n    product_page_views: 5200,\n    cart_abandonment_rate: 0.68,\n    avg_session_duration_sec: 142,\n    search_trend_index: 74,       // 0-100, higher = rising demand\n    seasonal_multiplier: 1.05,    // slight seasonal uplift\n    repeat_purchase_rate: 0.22\n  },\n\n  // Simulation price points to test\n  price_points_to_test: [35, 39, 42, 45, 49, 55, 59, 65, 69, 75]\n};\n\nreturn [{ json: productData }];"
+      },
+      "name": "Load Internal Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        944,
+        112
+      ],
+      "id": "4cf76c81-5b2f-420a-9619-c694307f36e0",
+      "notes": "Seeds product, sales history, demand signals. Replace with live DB/Sheets calls."
+    },
+    {
+      "parameters": {
+        "url": "https://www.vendr.com/pricing-api",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "name": "Fetch Competitor Prices (API/Scrape)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1168,
+        112
+      ],
+      "id": "91810e05-9a80-4dcf-abc6-e815ed99b78a",
+      "continueOnFail": true,
+      "notes": "Replace URL with competitor pricing page or a pricing intelligence API (e.g., Prisync, Wiser, Price2Spy). Falls back to mock data on error."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 2: NORMALIZE COMPETITOR DATA\n// Handles API failures gracefully with fallback mock data\n// ============================================================\n\nconst internalData = $node['Load Internal Data'].json;\n\n// Mock competitor data (fallback if API fails or for demo)\nconst mockCompetitors = [\n  { name: 'Competitor Alpha',  price: 45.00, currency: 'USD', plan: 'Pro',  rating: 4.2, last_seen: new Date().toISOString() },\n  { name: 'Competitor Beta',   price: 39.00, currency: 'USD', plan: 'Pro',  rating: 3.8, last_seen: new Date().toISOString() },\n  { name: 'Competitor Gamma',  price: 59.00, currency: 'USD', plan: 'Pro',  rating: 4.5, last_seen: new Date().toISOString() },\n  { name: 'Competitor Delta',  price: 52.00, currency: 'USD', plan: 'Pro',  rating: 4.0, last_seen: new Date().toISOString() },\n  { name: 'Competitor Epsilon',price: 29.00, currency: 'USD', plan: 'Pro',  rating: 3.2, last_seen: new Date().toISOString() }\n];\n\n// Use live data if available, else fall back\nlet competitors = mockCompetitors;\ntry {\n  const raw = $json;\n  if (raw && raw.products && Array.isArray(raw.products)) {\n    competitors = raw.products.map(p => ({\n      name: p.vendor_name || 'Unknown',\n      price: parseFloat(p.price) || 0,\n      currency: p.currency || 'USD',\n      plan: p.plan_name || 'Standard',\n      rating: parseFloat(p.rating) || 0,\n      last_seen: p.updated_at || new Date().toISOString()\n    })).filter(c => c.price > 0);\n  }\n} catch(e) {\n  // Use mock data silently\n}\n\n// Filter outliers (IQR method)\nconst prices = competitors.map(c => c.price).sort((a, b) => a - b);\nconst q1 = prices[Math.floor(prices.length * 0.25)];\nconst q3 = prices[Math.floor(prices.length * 0.75)];\nconst iqr = q3 - q1;\nconst validCompetitors = competitors.filter(c => \n  c.price >= (q1 - 1.5 * iqr) && c.price <= (q3 + 1.5 * iqr)\n);\n\n// Market statistics\nconst validPrices = validCompetitors.map(c => c.price);\nconst marketMin    = Math.min(...validPrices);\nconst marketMax    = Math.max(...validPrices);\nconst marketMean   = validPrices.reduce((a,b) => a+b, 0) / validPrices.length;\nconst sortedValid  = [...validPrices].sort((a,b) => a-b);\nconst marketMedian = sortedValid.length % 2 === 0\n  ? (sortedValid[sortedValid.length/2 - 1] + sortedValid[sortedValid.length/2]) / 2\n  : sortedValid[Math.floor(sortedValid.length/2)];\n\n// Our pricing percentile in the market\nconst ourPrice = internalData.current_price;\nconst belowUs = validPrices.filter(p => p < ourPrice).length;\nconst ourPercentile = Math.round((belowUs / validPrices.length) * 100);\n\nlet positionLabel;\nif (ourPercentile <= 25)      positionLabel = 'UNDERPRICED';\nelse if (ourPercentile <= 50) positionLabel = 'MARKET_AVERAGE_LOW';\nelse if (ourPercentile <= 75) positionLabel = 'MARKET_AVERAGE_HIGH';\nelse                          positionLabel = 'PREMIUM_PRICED';\n\nreturn [{\n  json: {\n    ...internalData,\n    competitor_analysis: {\n      competitors: validCompetitors,\n      outliers_removed: competitors.length - validCompetitors.length,\n      market_min: parseFloat(marketMin.toFixed(2)),\n      market_max: parseFloat(marketMax.toFixed(2)),\n      market_mean: parseFloat(marketMean.toFixed(2)),\n      market_median: parseFloat(marketMedian.toFixed(2)),\n      our_percentile: ourPercentile,\n      position_label: positionLabel,\n      data_freshness: new Date().toISOString()\n    }\n  }\n}];"
+      },
+      "name": "Normalize Competitor Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1392,
+        112
+      ],
+      "id": "0438ee67-0ac7-4c1b-a26a-f88dc1d46585",
+      "notes": "Removes price outliers via IQR, computes market stats, determines our position."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 3: DEMAND ELASTICITY MODELING\n// Calculates Price Elasticity of Demand (PED) from sales history\n// Uses linear regression + weighted conversion analysis\n// ============================================================\n\nconst data = $json;\nconst history = data.sales_history;\nconst signals = data.demand_signals;\n\n// --- 3a. Compute conversion rates from history ---\nconst historyWithCR = history.map(h => ({\n  ...h,\n  conversion_rate: h.conversions / h.traffic,\n  daily_units: h.units_sold / h.period_days,\n  revenue: h.price * h.units_sold\n}));\n\n// --- 3b. Linear Regression for Price vs Conversion Rate ---\n// y = conversion_rate, x = price\nconst n = historyWithCR.length;\nconst sumX  = historyWithCR.reduce((s, h) => s + h.price, 0);\nconst sumY  = historyWithCR.reduce((s, h) => s + h.conversion_rate, 0);\nconst sumXY = historyWithCR.reduce((s, h) => s + h.price * h.conversion_rate, 0);\nconst sumX2 = historyWithCR.reduce((s, h) => s + h.price * h.price, 0);\n\nconst slope     = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);\nconst intercept = (sumY - slope * sumX) / n;\n\n// --- 3c. Point Price Elasticity of Demand (PED) ---\n// PED = (dQ/Q) / (dP/P) approximated from regression slope\nconst basePrice = data.current_price;\nconst baseCR    = intercept + slope * basePrice;\nconst ped       = (slope * basePrice) / baseCR;  // dimensionless\n\n// --- 3d. Demand quality score (0-1) ---\nconst demandScore = (\n  (signals.search_trend_index / 100) * 0.3 +\n  (1 - signals.cart_abandonment_rate) * 0.4 +\n  (signals.avg_session_duration_sec / 300) * 0.2 +\n  signals.seasonal_multiplier * 0.1\n) * signals.seasonal_multiplier;\n\n// --- 3e. Demand sensitivity label ---\nlet elasticityLabel;\nif (Math.abs(ped) > 2.0)      elasticityLabel = 'HIGHLY_ELASTIC';    // very price sensitive\nelse if (Math.abs(ped) > 1.0) elasticityLabel = 'ELASTIC';           // moderately sensitive\nelse if (Math.abs(ped) > 0.5) elasticityLabel = 'INELASTIC';         // less sensitive\nelse                           elasticityLabel = 'HIGHLY_INELASTIC';  // price insensitive\n\nreturn [{\n  json: {\n    ...data,\n    elasticity_model: {\n      regression_slope: parseFloat(slope.toFixed(6)),\n      regression_intercept: parseFloat(intercept.toFixed(6)),\n      price_elasticity_of_demand: parseFloat(ped.toFixed(3)),\n      elasticity_label: elasticityLabel,\n      base_conversion_rate: parseFloat(baseCR.toFixed(4)),\n      demand_quality_score: parseFloat(Math.min(demandScore, 1).toFixed(3)),\n      history_with_cr: historyWithCR,\n      model_note: 'Linear regression on 90-day historical data. Min 6 data points recommended for production.'\n    }\n  }\n}];"
+      },
+      "name": "Demand Elasticity Model",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1616,
+        112
+      ],
+      "id": "0f60ea05-68f8-4f3c-be2a-72656b619156",
+      "notes": "Computes PED via linear regression. Classifies demand sensitivity. Calculates demand quality score."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 4: PRICE SIMULATION ENGINE\n// Tests every candidate price point and projects key metrics\n// ============================================================\nconsole.log('INPUT:', JSON.stringify({\n  price_points: $json.price_points_to_test,\n  cogs: $json.cogs,\n  current_price: $json.current_price,\n  elasticity_model: $json.elasticity_model,\n  competitor_analysis: $json.competitor_analysis\n}));\n\n\nconst data = $json;\nconst model = data.elasticity_model;\nconst signals = data.demand_signals;\nconst cogs = data.cogs;\nconst pricePoints = data.price_points_to_test;\n\nfunction predictCR(price) {\n  const raw = model.regression_intercept + model.regression_slope * price;\n  const adjusted = raw * model.demand_quality_score * data.demand_signals.seasonal_multiplier;\n  return Math.max(0.005, Math.min(0.25, adjusted));\n}\n\nconst simulations = (pricePoints || []).map(price => {\n  const cr           = predictCR(price);\n  const monthly_vol  = Math.round(signals.monthly_traffic * cr);\n  const revenue      = parseFloat((price * monthly_vol).toFixed(2));\n  const gross_profit = parseFloat(((price - cogs) * monthly_vol).toFixed(2));\n  const margin_pct   = parseFloat(((price - cogs) / price).toFixed(4));\n  const profit_score = gross_profit * (1 - Math.max(0, data.target_margin_pct - margin_pct));\n  const medianDiff   = Math.abs(price - data.competitor_analysis.market_median);\n  const comp_score   = Math.max(0, 1 - medianDiff / data.competitor_analysis.market_median);\n  const balanced_score = (profit_score / 10000) * 0.60 + comp_score * 0.25 + cr * 100 * 0.15;\n\n  let risk_level;\n  if (margin_pct < data.min_acceptable_margin)                  risk_level = 'CRITICAL';\n  else if (margin_pct < data.target_margin_pct - 0.10)         risk_level = 'HIGH';\n  else if (price > data.competitor_analysis.market_max * 1.1)  risk_level = 'HIGH';\n  else if (price < data.competitor_analysis.market_min * 0.85) risk_level = 'MEDIUM';\n  else                                                           risk_level = 'LOW';\n\n  return {\n    price,\n    predicted_cr: parseFloat(cr.toFixed(4)),\n    monthly_units: monthly_vol,\n    monthly_revenue: revenue,\n    monthly_gross_profit: gross_profit,\n    margin_pct: parseFloat((margin_pct * 100).toFixed(1)),\n    profit_score: parseFloat(profit_score.toFixed(2)),\n    competitive_score: parseFloat(comp_score.toFixed(3)),\n    balanced_score: parseFloat(balanced_score.toFixed(4)),\n    risk_level,\n    vs_current_revenue: parseFloat((revenue - (data.current_price * signals.monthly_traffic * model.base_conversion_rate)).toFixed(2))\n  };\n});\n\n// Fallback sim so reduce never operates on an empty array\nconst fallbackSim = {\n  price: data.current_price || 0,\n  predicted_cr: 0, monthly_units: 0, monthly_revenue: 0,\n  monthly_gross_profit: 0, margin_pct: 0, profit_score: 0,\n  competitive_score: 0, balanced_score: 0,\n  risk_level: 'CRITICAL', vs_current_revenue: 0\n};\n\nconst simsForReduce = simulations.length > 0 ? simulations : [fallbackSim];\nconst validSims     = simulations.filter(s => s.risk_level !== 'CRITICAL');\n\nconst profitOptimal  = simsForReduce.reduce((best, s) =>\n  s.monthly_gross_profit > best.monthly_gross_profit ? s : best\n);\nconst balancedOptimal = validSims.length > 0\n  ? validSims.reduce((best, s) => s.balanced_score > best.balanced_score ? s : best)\n  : profitOptimal;\n\nconst safeRange = simulations.filter(s =>\n  s.risk_level === 'LOW' && s.margin_pct >= data.min_acceptable_margin * 100\n);\nconst safeMin = safeRange.length ? Math.min(...safeRange.map(s => s.price)) : null;\nconst safeMax = safeRange.length ? Math.max(...safeRange.map(s => s.price)) : null;\n\nreturn [{\n  json: {\n    ...data,\n    simulations,\n    price_recommendation: {\n      profit_maximizing_price: profitOptimal.price,\n      balanced_growth_price:   balancedOptimal.price,\n      recommended_price:       balancedOptimal.price,\n      safe_range_min:          safeMin,\n      safe_range_max:          safeMax,\n      risky_above:             data.competitor_analysis.market_max * 1.1,\n      risky_below:             data.cogs / (1 - data.min_acceptable_margin),\n      profit_optimal_sim:      profitOptimal,\n      balanced_optimal_sim:    balancedOptimal\n    }\n  }\n}];"
+      },
+      "name": "Price Simulation Engine",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1840,
+        112
+      ],
+      "id": "58174508-e649-4772-a477-6d08e430f4b7",
+      "notes": "Core engine. Tests all price points. Calculates CR, volume, revenue, profit, risk. Finds profit-max and balanced-growth optima."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 5: CONFIDENCE SCORING & STRUCTURED PAYLOAD\n// Packages everything for the AI summarization layer\n// ============================================================\nconsole.log('REC:', JSON.stringify($json.price_recommendation));\nconst data = $json;\nconst rec  = data.price_recommendation || {};\nconst comp = data.competitor_analysis  || {};\nconst model = data.elasticity_model    || {};\n\nconst currentSim = (data.simulations || []).find(s => s.price === data.current_price)\n  || { monthly_revenue: 0, monthly_gross_profit: 0 };\n\nconst dataPoints          = (data.sales_history || []).length;\nconst elasticityConfidence = Math.min(dataPoints / 6, 1);\nconst marketConfidence     = Math.min((comp.competitors || []).length / 5, 1);\nconst demandConfidence     = model.demand_quality_score || 0;\nconst overallConfidence    = Math.round(\n  (elasticityConfidence * 0.40 + marketConfidence * 0.30 + demandConfidence * 0.30) * 100\n);\n\n// Null-safe: fall back to a zero-state object if balanced_optimal_sim is missing\nconst balOptSim = rec.balanced_optimal_sim || {\n  monthly_revenue: 0, monthly_gross_profit: 0,\n  margin_pct: 0, risk_level: 'UNKNOWN'\n};\n\nconst revDelta      = parseFloat((balOptSim.monthly_revenue    - currentSim.monthly_revenue).toFixed(2));\nconst profDelta     = parseFloat((balOptSim.monthly_gross_profit - currentSim.monthly_gross_profit).toFixed(2));\nconst priceDelta    = parseFloat(((rec.recommended_price || 0) - (data.current_price || 0)).toFixed(2));\nconst priceDeltaPct = data.current_price\n  ? parseFloat(((priceDelta / data.current_price) * 100).toFixed(1))\n  : 0;\n\nconst analysisPayload = {\n  product: {\n    id:                data.product_id,\n    name:              data.product_name,\n    current_price:     data.current_price,\n    cogs:              data.cogs,\n    target_margin_pct: (data.target_margin_pct || 0) * 100\n  },\n  market: {\n    position:         comp.position_label,\n    our_percentile:   comp.our_percentile,\n    market_median:    comp.market_median,\n    market_range:     `$${comp.market_min} - $${comp.market_max}`,\n    competitor_count: (comp.competitors || []).length\n  },\n  elasticity: {\n    ped:        model.price_elasticity_of_demand,\n    sensitivity: model.elasticity_label,\n    base_cr:    `${((model.base_conversion_rate || 0) * 100).toFixed(2)}%`\n  },\n  recommendation: {\n    recommended_price:            rec.recommended_price,\n    profit_maximizing_price:      rec.profit_maximizing_price,\n    safe_range:                   `$${rec.safe_range_min} - $${rec.safe_range_max}`,\n    predicted_monthly_revenue:    balOptSim.monthly_revenue,\n    predicted_monthly_profit:     balOptSim.monthly_gross_profit,\n    predicted_margin:             `${balOptSim.margin_pct}%`,\n    revenue_delta_vs_current:     revDelta,\n    profit_delta_vs_current:      profDelta,\n    price_change:                 `${priceDelta >= 0 ? '+' : ''}$${priceDelta} (${priceDeltaPct >= 0 ? '+' : ''}${priceDeltaPct}%)`,\n    confidence_score:             overallConfidence,\n    risk_level:                   balOptSim.risk_level\n  },\n  simulation_summary: (data.simulations || []).map(s => ({\n    price:          s.price,\n    margin:         `${s.margin_pct}%`,\n    monthly_profit: s.monthly_gross_profit,\n    risk:           s.risk_level\n  })),\n  alerts: [\n    ...(comp.position_label === 'UNDERPRICED'         ? ['Product appears underpriced relative to market'] : []),\n    ...(model.elasticity_label === 'HIGHLY_ELASTIC'   ? ['Demand is highly price sensitive - proceed with increases carefully'] : []),\n    ...(balOptSim.margin_pct < (data.target_margin_pct || 0) * 100 ? ['Recommended price is below target margin'] : []),\n    ...(priceDeltaPct > 15                            ? ['Recommended price increase >15% - consider phased rollout'] : [])\n  ]\n};\n\nreturn [{ json: { ...data, analysis_payload: analysisPayload, confidence_score: overallConfidence } }];"
+      },
+      "name": "Build Analysis Payload",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2064,
+        112
+      ],
+      "id": "5a685c76-7e6e-4d63-bed6-f06ea1251a1b",
+      "notes": "Computes confidence score. Packages all data into clean payload for Claude."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a senior pricing strategist and behavioral economist. Analyze this pricing intelligence data and produce a clear, executive-level pricing recommendation report.\n\nDATA:\n{{ JSON.stringify($json.analysis_payload, null, 2) }}\n\nProduce a structured report in this EXACT JSON format:\n{\n  \"executive_summary\": \"2-3 sentences explaining the core recommendation and why\",\n  \"market_insight\": \"What the competitor landscape tells us and how we should position\",\n  \"demand_insight\": \"What the elasticity data reveals about customer price sensitivity\",\n  \"primary_recommendation\": {\n    \"price\": <number>,\n    \"rationale\": \"Clear explanation of WHY this exact price\",\n    \"expected_impact\": \"Revenue and profit impact in plain English\",\n    \"implementation\": \"How to roll this out (immediate/phased/test first)\"\n  },\n  \"alternative_strategy\": {\n    \"price\": <number>,\n    \"name\": \"e.g. Volume Growth Strategy or Margin Defense Strategy\",\n    \"rationale\": \"When to choose this instead\",\n    \"trade_off\": \"What you gain vs what you give up\"\n  },\n  \"risks\": [\"risk 1\", \"risk 2\", \"risk 3\"],\n  \"opportunities\": [\"opportunity 1\", \"opportunity 2\"],\n  \"monitoring_kpis\": [\"KPI 1 with target\", \"KPI 2 with target\", \"KPI 3 with target\"],\n  \"one_line_verdict\": \"Single memorable sentence summarizing the recommendation\"\n}\n\nReturn ONLY valid JSON. No markdown. No preamble.",
+        "options": {}
+      },
+      "name": "Claude AI Insight Generator",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        2288,
+        112
+      ],
+      "id": "f99efe38-0aeb-4fda-87ce-0088566d0ecf",
+      "notes": "Native AI Agent node. Connect an Anthropic Claude model sub-node as the language model."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 6: PARSE AI RESPONSE + VALIDATE\n// Extracts Claude's JSON insight, falls back gracefully\n// ============================================================\n\nconst prevData = $node['Build Analysis Payload'].json;\nconst aiResponse = $json;\n\nlet aiInsights = null;\nlet aiError = null;\n\ntry {\n  const content = aiResponse.content?.[0]?.text || '';\n  // Strip any accidental markdown fences\n  const clean = content.replace(/```json|```/g, '').trim();\n  aiInsights = JSON.parse(clean);\n} catch (e) {\n  aiError = `AI parse error: ${e.message}`;\n  // Graceful fallback\n  const rec = prevData.price_recommendation;\n  const balSim = rec.balanced_optimal_sim;\n  aiInsights = {\n    executive_summary: `Based on market analysis and demand modeling, a price of $${rec.recommended_price} is recommended for ${prevData.product_name}. This optimizes for balanced growth given current market conditions.`,\n    market_insight: `Product is positioned at the ${prevData.competitor_analysis.our_percentile}th percentile of competitor pricing. Market median is $${prevData.competitor_analysis.market_median}.`,\n    demand_insight: `Demand shows ${prevData.elasticity_model.elasticity_label.toLowerCase().replace('_', ' ')} characteristics with a PED of ${prevData.elasticity_model.price_elasticity_of_demand}.`,\n    primary_recommendation: {\n      price: rec.recommended_price,\n      rationale: 'Derived from profit simulation engine and market positioning analysis.',\n      expected_impact: `Projected monthly profit: $${balSim.monthly_gross_profit} at ${balSim.margin_pct}% margin.`,\n      implementation: balSim.risk_level === 'LOW' ? 'Can be implemented immediately.' : 'Consider A/B testing before full rollout.'\n    },\n    alternative_strategy: {\n      price: rec.profit_maximizing_price,\n      name: 'Profit Maximization Strategy',\n      rationale: 'Choose if margin improvement is the primary goal.',\n      trade_off: 'Higher margin but likely lower conversion volume.'\n    },\n    risks: prevData.analysis_payload.alerts.length > 0 ? prevData.analysis_payload.alerts : ['Monitor conversion rate post-change', 'Watch competitor response'],\n    opportunities: ['Optimize packaging at new price point', 'Test annual plan pricing'],\n    monitoring_kpis: ['Conversion rate (target: maintain within 10% of baseline)', 'Monthly gross profit', 'Competitor price gap'],\n    one_line_verdict: `Price at $${rec.recommended_price} to maximize balanced growth.`\n  };\n}\n\nreturn [{\n  json: {\n    ...prevData,\n    ai_insights: aiInsights,\n    ai_error: aiError,\n    report_generated_at: new Date().toISOString(),\n    run_id: `RUN-${Date.now()}`\n  }\n}];"
+      },
+      "name": "Parse AI Insights",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        112
+      ],
+      "id": "a7eee226-6895-45d8-8f81-14cb9766a184",
+      "notes": "Parses Claude JSON. Falls back to rule-based insights if API fails."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 7: ALERT TRIGGER EVALUATION\n// Checks if any alert conditions are met\n// ============================================================\n\nconst data = $json;\nconst comp = data.competitor_analysis;\nconst rec = data.price_recommendation;\nconst prevRec = null; // In production: load from DB/Sheets for comparison\n\nconst alerts = [];\n\n// Competitor significantly below us\nconst cheapestComp = comp.competitors.reduce((min, c) => c.price < min.price ? c : min, comp.competitors[0]);\nif (cheapestComp && cheapestComp.price < data.current_price * 0.75) {\n  alerts.push({\n    type: 'COMPETITOR_UNDERCUT',\n    severity: 'HIGH',\n    message: `${cheapestComp.name} is pricing at $${cheapestComp.price} — ${Math.round((1 - cheapestComp.price/data.current_price)*100)}% below you. Review positioning.`\n  });\n}\n\n// Margin below threshold\nconst currentSim = data.simulations.find(s => s.price === data.current_price);\nif (currentSim && currentSim.margin_pct < data.min_acceptable_margin * 100) {\n  alerts.push({\n    type: 'MARGIN_CRITICAL',\n    severity: 'CRITICAL',\n    message: `Current margin of ${currentSim.margin_pct}% is below the minimum acceptable threshold of ${data.min_acceptable_margin*100}%.`\n  });\n}\n\n// Demand signal warning\nif (data.demand_signals.cart_abandonment_rate > 0.75) {\n  alerts.push({\n    type: 'HIGH_ABANDONMENT',\n    severity: 'MEDIUM',\n    message: `Cart abandonment rate is ${(data.demand_signals.cart_abandonment_rate*100).toFixed(0)}% — significantly above average. Price may be a conversion barrier.`\n  });\n}\n\n// Large recommended change\nconst priceDelta = Math.abs(rec.recommended_price - data.current_price);\nif (priceDelta > data.current_price * 0.20) {\n  alerts.push({\n    type: 'LARGE_PRICE_CHANGE',\n    severity: 'MEDIUM',\n    message: `Recommended change of $${priceDelta.toFixed(2)} (${((priceDelta/data.current_price)*100).toFixed(0)}%) is significant. Consider phased rollout.`\n  });\n}\n\nreturn [{\n  json: {\n    ...data,\n    active_alerts: alerts,\n    has_critical_alert: alerts.some(a => a.severity === 'CRITICAL'),\n    has_high_alert: alerts.some(a => a.severity === 'HIGH')\n  }\n}];"
+      },
+      "name": "Alert Evaluation",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2864,
+        112
+      ],
+      "id": "e01f94e7-76c3-41ac-beba-6ec894ae5f5a",
+      "notes": "Evaluates alert conditions: competitor undercut, margin breach, high abandonment, large price change."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.has_critical_alert || $json.has_high_alert}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Has High/Critical Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3136,
+        112
+      ],
+      "id": "330c0b78-31b3-4184-ae5c-49ae1c0d147d",
+      "notes": "Branches: Yes = send Telegram alert immediately. Both paths continue to Sheets + Email."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 8: FORMAT GOOGLE SHEETS ROW\n// Flattens all data into a single Sheets-compatible row\n// ============================================================\nconst d = $json;\nconst rec = d.price_recommendation || {};\nconst balSim = rec.balanced_optimal_sim || {\n  monthly_revenue: 0, monthly_gross_profit: 0,\n  margin_pct: 0, predicted_cr: 0, risk_level: 'UNKNOWN'\n};\nconst insights = d.ai_insights || {};\nconst comp = d.competitor_analysis || {};\n\nconst sheetsRow = {\n  // Meta\n  run_id:        d.run_id,\n  timestamp:     d.report_generated_at,\n  product_id:    d.product_id,\n  product_name:  d.product_name,\n  // Current state\n  current_price:      d.current_price,\n  current_position:   comp.position_label,\n  current_percentile: comp.our_percentile,\n  // Market\n  market_median:    comp.market_median,\n  market_min:       comp.market_min,\n  market_max:       comp.market_max,\n  competitor_count: (comp.competitors || []).length,\n  // Recommendation\n  recommended_price:  rec.recommended_price,\n  profit_max_price:   rec.profit_maximizing_price,\n  safe_range_min:     rec.safe_range_min,\n  safe_range_max:     rec.safe_range_max,\n  // Predicted outcomes\n  predicted_monthly_revenue:  balSim.monthly_revenue,\n  predicted_monthly_profit:   balSim.monthly_gross_profit,\n  predicted_margin_pct:       balSim.margin_pct,\n  predicted_conversion_rate:  ((balSim.predicted_cr || 0) * 100).toFixed(2),\n  // Elasticity\n  price_elasticity: (d.elasticity_model || {}).price_elasticity_of_demand,\n  elasticity_label: (d.elasticity_model || {}).elasticity_label,\n  // Confidence\n  confidence_score: d.confidence_score,\n  risk_level:       balSim.risk_level,\n  // AI insights\n  executive_summary:  insights.executive_summary || '',\n  one_line_verdict:   insights.one_line_verdict || '',\n  primary_rationale:  insights.primary_recommendation?.rationale || '',\n  top_risk:           insights.risks?.[0] || '',\n  top_opportunity:    insights.opportunities?.[0] || '',\n  // Alerts\n  alert_count:  (d.active_alerts || []).length,\n  alert_types:  (d.active_alerts || []).map(a => a.type).join(', ')\n};\n\nreturn [{ json: { ...d, ...sheetsRow } }];"
+      },
+      "name": "Format Sheets Row",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        3568,
+        -32
+      ],
+      "id": "740194cc-ee0e-4d80-948e-c4f1b80ce770",
+      "notes": "Flattens all analysis into a clean Google Sheets row for dashboard tracking."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1S2OgOjAvbrE263CzyPpKj3gQ9XQ7-hIApFpl_2pyDZM",
+          "mode": "list",
+          "cachedResultName": "Competitor Price Analysis",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1S2OgOjAvbrE263CzyPpKj3gQ9XQ7-hIApFpl_2pyDZM/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Price Recommendations",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1S2OgOjAvbrE263CzyPpKj3gQ9XQ7-hIApFpl_2pyDZM/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "competitor_count",
+              "displayName": "competitor_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "predicted_monthly_revenue",
+              "displayName": "predicted_monthly_revenue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "predicted_monthly_profit",
+              "displayName": "predicted_monthly_profit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "predicted_margin_pct",
+              "displayName": "predicted_margin_pct",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "predicted_conversion_rate",
+              "displayName": "predicted_conversion_rate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "risk_level",
+              "displayName": "risk_level",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "executive_summary",
+              "displayName": "executive_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "one_line_verdict",
+              "displayName": "one_line_verdict",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "primary_rationale",
+              "displayName": "primary_rationale",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "top_risk",
+              "displayName": "top_risk",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "top_opportunity",
+              "displayName": "top_opportunity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "alert_count",
+              "displayName": "alert_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "alert_types",
+              "displayName": "alert_types",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "product_id",
+              "displayName": "product_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "product_name",
+              "displayName": "product_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "current_price",
+              "displayName": "current_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "current_position",
+              "displayName": "current_position",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "current_percentile",
+              "displayName": "current_percentile",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "market_median",
+              "displayName": "market_median",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "market_min",
+              "displayName": "market_min",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "market_max",
+              "displayName": "market_max",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "recommended_price",
+              "displayName": "recommended_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "profit_max_price",
+              "displayName": "profit_max_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "safe_range_min",
+              "displayName": "safe_range_min",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "safe_range_max",
+              "displayName": "safe_range_max",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "price_elasticity",
+              "displayName": "price_elasticity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "elasticity_label",
+              "displayName": "elasticity_label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "confidence_score",
+              "displayName": "confidence_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "labelIds",
+              "displayName": "labelIds",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cogs",
+              "displayName": "cogs",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "target_margin_pct",
+              "displayName": "target_margin_pct",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "min_acceptable_margin",
+              "displayName": "min_acceptable_margin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "sales_history",
+              "displayName": "sales_history",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "demand_signals",
+              "displayName": "demand_signals",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "price_points_to_test",
+              "displayName": "price_points_to_test",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "competitor_analysis",
+              "displayName": "competitor_analysis",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "elasticity_model",
+              "displayName": "elasticity_model",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "simulations",
+              "displayName": "simulations",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "price_recommendation",
+              "displayName": "price_recommendation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_payload",
+              "displayName": "analysis_payload",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ai_insights",
+              "displayName": "ai_insights",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ai_error",
+              "displayName": "ai_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "report_generated_at",
+              "displayName": "report_generated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "active_alerts",
+              "displayName": "active_alerts",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "has_critical_alert",
+              "displayName": "has_critical_alert",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "has_high_alert",
+              "displayName": "has_high_alert",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "name": "Write to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        3792,
+        -48
+      ],
+      "id": "e9893285-7e81-4f3e-bd1f-3bad2f522b35",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Appends recommendation row to dashboard sheet. Set up Google Sheets OAuth credential."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 9: COMPOSE EMAIL REPORT (HTML)\n// Rich HTML email with full analysis\n// ============================================================\n\nconst d = $json;\nconst rec = d.price_recommendation || {};\nconst balSim = rec.balanced_optimal_sim || {\n  monthly_revenue: 0, monthly_gross_profit: 0,\n  margin_pct: 0, predicted_cr: 0, risk_level: 'UNKNOWN'\n};\nconst insights = d.ai_insights || {};\nconst comp = d.competitor_analysis || {};\n\nconst alertsHtml = (d.active_alerts || []).length > 0\n  ? (d.active_alerts || []).map(a => `<tr><td style='color:${a.severity==='CRITICAL'?'#dc2626':a.severity==='HIGH'?'#ea580c':'#ca8a04'};font-weight:600'>${a.severity}</td><td>${a.message}</td></tr>`).join('')\n  : '<tr><td colspan=\"2\">No alerts triggered</td></tr>';\n\nconst simTableHtml = (d.simulations || []).map(s => {\n  const isRec = s.price === rec.recommended_price;\n  const bgColor = isRec ? '#dbeafe' : s.risk_level === 'CRITICAL' ? '#fee2e2' : 'white';\n  return `<tr style='background:${bgColor}'>\n    <td>$${s.price}${isRec ? ' ⭐' : ''}</td>\n    <td>${s.margin_pct}%</td>\n    <td>$${s.monthly_gross_profit.toLocaleString()}</td>\n    <td>${(s.predicted_cr*100).toFixed(2)}%</td>\n    <td>${s.risk_level}</td>\n  </tr>`;\n}).join('');\n\nconst htmlEmail = `<!DOCTYPE html>\n<html><head><style>\n  body { font-family: Arial, sans-serif; color: #1e293b; max-width: 700px; margin: 0 auto; padding: 20px; }\n  .header { background: #1e3a5f; color: white; padding: 24px; border-radius: 8px 8px 0 0; }\n  .header h1 { margin: 0; font-size: 20px; }\n  .header p { margin: 4px 0 0; opacity: 0.8; font-size: 13px; }\n  .section { background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; margin-top: 12px; border-radius: 6px; }\n  .section h2 { margin: 0 0 12px; font-size: 15px; color: #1e3a5f; border-bottom: 2px solid #1e3a5f; padding-bottom: 6px; }\n  .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }\n  .metric { background: white; border: 1px solid #e2e8f0; padding: 14px; border-radius: 6px; text-align: center; }\n  .metric .value { font-size: 22px; font-weight: 700; color: #1e3a5f; }\n  .metric .label { font-size: 11px; color: #64748b; margin-top: 4px; }\n  .rec-box { background: #1e3a5f; color: white; padding: 18px; border-radius: 6px; text-align: center; }\n  .rec-box .price { font-size: 36px; font-weight: 800; }\n  .rec-box .sub { opacity: 0.8; font-size: 13px; }\n  table { width: 100%; border-collapse: collapse; font-size: 13px; }\n  th { background: #1e3a5f; color: white; padding: 8px 10px; text-align: left; }\n  td { padding: 7px 10px; border-bottom: 1px solid #e2e8f0; }\n  .verdict { background: #dcfce7; border-left: 4px solid #16a34a; padding: 14px; border-radius: 0 6px 6px 0; font-style: italic; font-size: 15px; }\n  .footer { font-size: 11px; color: #94a3b8; text-align: center; margin-top: 20px; }\n</style></head><body>\n\n<div class='header'>\n  <h1>Pricing Intelligence Report — ${d.product_name}</h1>\n  <p>Run ID: ${d.run_id} &nbsp;|&nbsp; Generated: ${new Date(d.report_generated_at).toLocaleString()} &nbsp;|&nbsp; Confidence: ${d.confidence_score}%</p>\n</div>\n\n<div class='section'>\n  <h2>Recommendation</h2>\n  <div class='rec-box'>\n    <div class='sub'>RECOMMENDED PRICE</div>\n    <div class='price'>$${rec.recommended_price}</div>\n    <div class='sub'>Currently $${d.current_price} &nbsp;|&nbsp; Market Median $${comp.market_median} &nbsp;|&nbsp; Your Percentile: ${comp.our_percentile}th</div>\n  </div>\n  <br>\n  <div class='verdict'>${insights.one_line_verdict || ''}</div>\n</div>\n\n<div class='section'>\n  <h2>Key Metrics at Recommended Price</h2>\n  <div class='metric-grid'>\n    <div class='metric'><div class='value'>$${balSim.monthly_revenue.toLocaleString()}</div><div class='label'>Projected Monthly Revenue</div></div>\n    <div class='metric'><div class='value'>$${balSim.monthly_gross_profit.toLocaleString()}</div><div class='label'>Projected Monthly Profit</div></div>\n    <div class='metric'><div class='value'>${balSim.margin_pct}%</div><div class='label'>Gross Margin</div></div>\n  </div>\n</div>\n\n<div class='section'>\n  <h2>AI Analysis</h2>\n  <p><strong>Executive Summary:</strong> ${insights.executive_summary || ''}</p>\n  <p><strong>Market Insight:</strong> ${insights.market_insight || ''}</p>\n  <p><strong>Demand Insight:</strong> ${insights.demand_insight || ''}</p>\n</div>\n\n<div class='section'>\n  <h2>Price Simulation Results</h2>\n  <table><thead><tr><th>Price</th><th>Margin</th><th>Monthly Profit</th><th>Conv. Rate</th><th>Risk</th></tr></thead>\n  <tbody>${simTableHtml}</tbody></table>\n  <p style='font-size:12px;color:#64748b;margin-top:8px'>⭐ = Recommended price</p>\n</div>\n\n<div class='section'>\n  <h2>Active Alerts</h2>\n  <table><thead><tr><th>Severity</th><th>Message</th></tr></thead>\n  <tbody>${alertsHtml}</tbody></table>\n</div>\n\n<div class='section'>\n  <h2>Risks &amp; Opportunities</h2>\n  <p><strong>Risks:</strong></p>\n  <ul>${(insights.risks || []).map(r => `<li>${r}</li>`).join('')}</ul>\n  <p><strong>Opportunities:</strong></p>\n  <ul>${(insights.opportunities || []).map(o => `<li>${o}</li>`).join('')}</ul>\n</div>\n\n<div class='footer'>Powered by Pricing Optimization Agent &bull; By Shinar Automation </div>\n</body></html>`;\n\nreturn [{ json: { ...d, email_html: htmlEmail } }];"
+      },
+      "name": "Compose Email Report",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        4000,
+        240
+      ],
+      "id": "fb4e86a5-d3cf-4cd0-a1d6-1f5a93c79d08",
+      "notes": "Generates rich HTML email with full analysis, simulation table, alerts, and AI insights."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ============================================================\n// STEP 10: LOGGING & DEDUPLICATION\n// Logs run to internal store. In production: write to DB\n// ============================================================\nconst d = $json;\n\nconst rec = d.price_recommendation || {};\nconst alerts = d.active_alerts || [];\n\n// Deduplication key: product + recommended price + date\nconst dedupeKey = `${d.product_id}_$${rec.recommended_price ?? 'N/A'}_${new Date().toDateString()}`;\n\nconst logEntry = {\n  run_id:            d.run_id,\n  dedupe_key:        dedupeKey,\n  product_id:        d.product_id,\n  product_name:      d.product_name,\n  current_price:     d.current_price,\n  recommended_price: rec.recommended_price ?? null,\n  confidence_score:  d.confidence_score,\n  alert_count:       alerts.length,\n  has_critical:      d.has_critical_alert,\n  ai_verdict:        d.ai_insights?.one_line_verdict || '',\n  timestamp:         d.report_generated_at,\n  status:            'COMPLETED'\n};\n\nconsole.log('PRICING_AGENT_LOG:', JSON.stringify(logEntry));\nreturn [{ json: { ...d, log_entry: logEntry, workflow_status: 'SUCCESS' } }];"
+      },
+      "name": "Log & Deduplicate",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        4432,
+        112
+      ],
+      "id": "3dd10189-c77e-4908-b403-9b47733a61fd",
+      "notes": "Logs run metadata. Generates deduplication key. Replace console.log with DB write in production."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"run_id\": \"{{ $('Compose Email Report').item.json.run_id }}\",\n  \"product\": \"{{ $('Compose Email Report').item.json.product_name }}\",\n  \"recommended_price\": \"{{ $json.price_recommendation?.recommended_price ?? 'N/A' }}\",\n  \"confidence_score\": \"{{ $json.confidence_score ?? 0 }}\",\n  \"one_line_verdict\": \"{{ $json.ai_insights?.one_line_verdict ?? '' }}\",\n  \"alert_count\": \"{{ ($json.active_alerts ?? []).length }}\",\n  \"report_generated_at\": \"{{ $('Compose Email Report').item.json.report_generated_at }}\"\n}",
+        "options": {}
+      },
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        4656,
+        112
+      ],
+      "id": "a8a5567a-c518-4f8e-a4e8-26e35ba5ef51",
+      "notes": "Returns summary JSON to webhook caller. Includes recommendation + confidence."
+    },
+    {
+      "parameters": {
+        "functionCode": "// Retry logic wrapper — logs the error and emits a structured error event\nconst error = $json.error || 'Unknown error';\nconsole.error('PRICING_AGENT_ERROR:', error);\nreturn [{ json: { status: 'ERROR', error: error, timestamp: new Date().toISOString() } }];"
+      },
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        720,
+        432
+      ],
+      "id": "2fb29014-bf51-4fb7-a8fd-25036523190e",
+      "notes": "Catches workflow-level errors. Extend to send error Telegram/email notifications."
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-5-20250929",
+          "cachedResultName": "Claude Sonnet 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        2160,
+        320
+      ],
+      "id": "6f6dfeb9-022a-46f8-a8ea-e2f292ca911e",
+      "name": "Anthropic Chat Model",
+      "credentials": {
+        "anthropicApi": {
+          "id": "K4fErlXLVpqDW58G",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "adetunjimuhammed26@gmail.com",
+        "subject": "=[{{$json.confidence_score}}% Confidence] Pricing Report — {{$json.product_name}} — Recommend ${{$json.price_recommendation.recommended_price}}",
+        "message": "={{$node[\"Compose Email Report\"].json[\"email_html\"]}}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        4208,
+        112
+      ],
+      "id": "ab360745-017d-46ee-877e-3fb119e90f62",
+      "name": "Send a message",
+      "webhookId": "e0573941-e985-41e6-a8fb-d3fcd5f16455",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Qc3NUOKHPPpwr3AY",
+          "name": "Gmail account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger (Every 6h)": {
+      "main": [
+        [
+          {
+            "node": "Load Internal Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Internal Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Internal Data": {
+      "main": [
+        [
+          {
+            "node": "Fetch Competitor Prices (API/Scrape)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Competitor Prices (API/Scrape)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Competitor Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Competitor Data": {
+      "main": [
+        [
+          {
+            "node": "Demand Elasticity Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Demand Elasticity Model": {
+      "main": [
+        [
+          {
+            "node": "Price Simulation Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price Simulation Engine": {
+      "main": [
+        [
+          {
+            "node": "Build Analysis Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Analysis Payload": {
+      "main": [
+        [
+          {
+            "node": "Claude AI Insight Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude AI Insight Generator": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Insights": {
+      "main": [
+        [
+          {
+            "node": "Alert Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Has High/Critical Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has High/Critical Alert?": {
+      "main": [
+        [
+          {
+            "node": "Format Sheets Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose Email Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Sheets Row": {
+      "main": [
+        [
+          {
+            "node": "Write to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Compose Email Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Email Report": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log & Deduplicate": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Claude AI Insight Generator",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Log & Deduplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b946b203-2711-4913-84ce-dc6fb7625a43",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e1192d852f6a38d336be2f732e2cd231545a7e06cb7c87128e32408b20ec4958"
+  },
+  "id": "zou2dG0KlKGPxf2R",
+  "tags": [
+    {
+      "updatedAt": "2026-05-06T18:35:39.818Z",
+      "createdAt": "2026-05-06T18:35:39.818Z",
+      "id": "5iC9D0GJGyxMJ5I9",
+      "name": "Portfolio"
+    }
+  ]
+}

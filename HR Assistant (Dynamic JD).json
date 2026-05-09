@@ -1,0 +1,1731 @@
+{
+  "name": "HR Assistant (Dynamic JD)",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "has:attachment subject:(application OR CV OR resume OR apply) -label:hr-processed"
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "id": "5569e60e-9f52-4367-9461-dc83f6e90e47",
+      "name": "Gmail Trigger — New Application Email1",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1792,
+        1168
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Qc3NUOKHPPpwr3AY",
+          "name": "Gmail account 2"
+        }
+      },
+      "notes": "Polls Gmail every minute. Matches emails with attachments whose subject contains 'application', 'CV', 'resume', or 'apply'. Skips already-processed emails via the 'hr-processed' label. downloadAttachments:true is critical — it makes n8n download attachment binary data into the item."
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item;\nconst j    = item.json;\nconst bin  = item.binary || {};\n\nlet triggerJson = {};\ntry {\n  triggerJson = $('Gmail Trigger — New Application Email1').item.json;\n} catch(e) {\n  triggerJson = {};\n}\n\nfunction getField(obj, ...keys) {\n  for (const key of keys) {\n    const val = obj[key];\n    if (val !== undefined && val !== null && val !== '') {\n      if (Array.isArray(val)) return String(val[0] ?? '');\n      if (typeof val === 'object') return String(Object.values(val)[0] ?? '');\n      return String(val);\n    }\n  }\n  return '';\n}\n\n// ── FROM ──────────────────────────────────────────────────────\nlet applicantEmail   = '';\nlet applicantNameRaw = '';\n\nconst fromObj = j.from || triggerJson.from;\n\nif (fromObj && typeof fromObj === 'object' && Array.isArray(fromObj.value) && fromObj.value.length > 0) {\n  applicantEmail   = fromObj.value[0].address || '';\n  applicantNameRaw = fromObj.value[0].name    || '';\n} else if (fromObj && typeof fromObj === 'object' && fromObj.text) {\n  const emailMatch = fromObj.text.match(/[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}/);\n  const nameMatch  = fromObj.text.match(/^\"?([^\"<\\n]+?)\"?\\s*</);\n  if (emailMatch) applicantEmail   = emailMatch[0].trim();\n  if (nameMatch)  applicantNameRaw = nameMatch[1].trim();\n} else {\n  const bodyText = j.text || j.snippet || '';\n  const bodyEmailMatch = bodyText.match(/[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}/);\n  if (bodyEmailMatch) applicantEmail = bodyEmailMatch[0].trim();\n}\n\nif (!applicantNameRaw && applicantEmail) {\n  applicantNameRaw = applicantEmail.split('@')[0];\n}\n\n// ── SUBJECT ───────────────────────────────────────────────────\nconst emailSubject = j.subject || triggerJson.subject || '';\n\n// ── BODY ──────────────────────────────────────────────────────\nconst emailBodyText = j.text || j.textPlain || j.snippet || triggerJson.text || '';\n\n// ── MESSAGE ID ────────────────────────────────────────────────\nconst gmailMessageId = j.id || triggerJson.id || '';\n\n// ── ROLE DETECTION ────────────────────────────────────────────\nconst subjectLower = emailSubject.toLowerCase();\nlet roleId = 'default_role';\n\nif      (subjectLower.includes('data analyst'))  roleId = 'data_analyst';\nelse if (subjectLower.includes('engineer'))      roleId = 'engineer';\nelse if (subjectLower.includes('oil'))           roleId = 'oil_and_gas';\nelse if (subjectLower.includes('gas'))           roleId = 'oil_and_gas';\nelse if (subjectLower.includes('petroleum'))     roleId = 'oil_and_gas';\nelse if (subjectLower.includes('energy'))        roleId = 'energy';\n\n// ── ATTACHMENTS ───────────────────────────────────────────────\nconst binaryKeys      = Object.keys(bin);\nconst attachmentCount = binaryKeys.length;\nlet attachmentName    = '';\nlet attachmentMime    = '';\n\nif (binaryKeys.length > 0) {\n  const firstBin = bin[binaryKeys[0]];\n  attachmentName = getField(firstBin, 'fileName', 'filename', 'name') || binaryKeys[0];\n  attachmentMime = getField(firstBin, 'mimeType', 'fileType');\n}\n\nreturn {\n  json: {\n    application_id:     'APP_' + $now.toMillis(),\n    applicant_email:    applicantEmail,\n    applicant_name_raw: applicantNameRaw,\n    email_subject:      emailSubject,\n    email_body_text:    emailBodyText,\n    gmail_message_id:   gmailMessageId,\n    submitted_at:       $now.toISO(),\n    source_channel:     'email',\n    role_id:            roleId,\n    attachment_count:   attachmentCount,\n    attachment_name:    attachmentName,\n    attachment_mime:    attachmentMime\n  },\n  binary: bin\n};"
+      },
+      "id": "b6dc3933-a7e4-4e57-a9f3-9f2b2d09771a",
+      "name": "Set Application Metadata1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1568,
+        1168
+      ],
+      "notes": "Code node (not Set node) — required because $binary is inaccessible in Set nodes. Extracts email address, sender name, subject, and attachment metadata from all known Gmail Trigger output paths with fallbacks. Passes $binary through to downstream extraction nodes."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "v1",
+              "leftValue": "={{ $('Set Application Metadata1').item.json.application_id }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            },
+            {
+              "id": "v2",
+              "leftValue": "={{ $('Set Application Metadata1').item.json.applicant_email }}",
+              "rightValue": "@",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "v3",
+              "leftValue": "={{ $('Set Application Metadata1').item.json.attachment_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "886861a0-4b06-4b6e-a2ea-acb41b2c1ccf",
+      "name": "Validate: Has Email + Attachment1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1120,
+        1168
+      ],
+      "notes": "Reads attachment_count and applicant_email from the upstream Code node output. Both fields are now correctly populated from $json and $binary."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "sk1",
+              "name": "skipped_reason",
+              "value": "No valid email address or no CV attachment found",
+              "type": "string"
+            },
+            {
+              "id": "sk2",
+              "name": "skipped_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3063a374-6c8d-4628-af42-bc4acdcf5bb1",
+      "name": "Log Skipped Email1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -896,
+        1264
+      ],
+      "notes": "Dead-end branch — invalid emails are logged and workflow stops here for that item."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM/edit?pli=1&gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Candidates",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "application_id",
+              "lookupValue": "={{ $('Set Application Metadata1').item.json.application_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ebd00154-72d2-4de2-b042-cf1f6cc3619b",
+      "name": "Check Duplicate in Google Sheets1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -896,
+        1072
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "maxTries": 2,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Looks up email + role_id combination in the Candidates sheet. If a row is found, it's a duplicate. continueOnFail=true means 'no row found' errors pass through."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "dup1",
+              "leftValue": "={{ Object.keys($json).length }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              },
+              "rightValue": 0
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e7ac68d2-4b65-4fb5-889f-9fa0db4b6420",
+      "name": "Is Duplicate Application?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -672,
+        1072
+      ],
+      "alwaysOutputData": false,
+      "notes": "If Google Sheets returned a row (email field is populated), this is a duplicate. True = duplicate found → stop. False = no existing record → proceed."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "dp1",
+              "name": "duplicate_reason",
+              "value": "Application already exists for this email and role",
+              "type": "string"
+            },
+            {
+              "id": "dp2",
+              "name": "logged_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0eafc013-bae4-4305-bc70-bf3dc92662ea",
+      "name": "Log Duplicate — Stop1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -448,
+        976
+      ],
+      "notes": "Duplicate applications are logged and silently dropped — no email sent to avoid confusion."
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item;\n// Always pull binary directly from Set Application Metadata\nconst bin = $('Set Application Metadata1').item.binary || {};\nconst meta = item.json;\n\n// Debug — lets us see what's in binary\nconst binaryKeys = Object.keys(bin);\n\nlet cvBinaryKey = null;\nlet cvMimeType  = '';\nlet cvFilename  = '';\nlet bestRank    = 999;\n\nfor (const key of binaryKeys) {\n  const b        = bin[key];\n  const mime     = (b.mimeType || '').toLowerCase();\n  const filename = (b.fileName || b.filename || '').toLowerCase();\n\n  const isPdf  = mime.includes('pdf')  || filename.endsWith('.pdf');\n  const isDocx = mime.includes('wordprocessingml') || filename.endsWith('.docx');\n  const isDoc  = mime.includes('msword') || filename.endsWith('.doc');\n  const isTxt  = mime.includes('text/plain') || filename.endsWith('.txt');\n\n  let rank = 999;\n  if (isPdf)       rank = 1;\n  else if (isDocx) rank = 2;\n  else if (isDoc)  rank = 3;\n  else if (isTxt)  rank = 4;\n\n  if (rank < bestRank) {\n    bestRank    = rank;\n    cvBinaryKey = key;\n    cvMimeType  = mime;\n    cvFilename  = b.fileName || b.filename || key;\n  }\n}\n\nif (!cvBinaryKey) {\n  return {\n    json: {\n      ...meta,\n      cv_extraction_error:     true,\n      cv_extraction_error_msg: 'No recognizable CV attachment found (expected PDF, DOCX, or TXT)',\n      cv_binary_key:           null,\n      cv_mime_type:            '',\n      cv_filename:             '',\n      _debug_binary_keys:      binaryKeys.join(', ') || 'EMPTY'\n    },\n    binary: bin\n  };\n}\n\nlet extraction_strategy = 'unknown';\nif (bestRank === 1)                  extraction_strategy = 'pdf';\nelse if (bestRank === 2 || bestRank === 3) extraction_strategy = 'docx';\nelse if (bestRank === 4)             extraction_strategy = 'text';\n\nreturn {\n  json: {\n    ...meta,\n    cv_extraction_error:   false,\n    cv_binary_key:         cvBinaryKey,\n    cv_mime_type:          cvMimeType,\n    cv_filename:           cvFilename,\n    extraction_strategy:   extraction_strategy\n  },\n  binary: bin\n};"
+      },
+      "id": "7d0e85b7-be94-4636-b73d-d9e3a1582ae3",
+      "name": "Detect CV Attachment Type1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        1168
+      ],
+      "notes": "Inspects all binary attachments, ranks by file type priority (PDF > DOCX > DOC > TXT), and selects the best CV candidate. Sets extraction_strategy for the branching router below."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.extraction_strategy }}",
+                    "rightValue": "pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "0e179eec-5518-406d-afeb-267a0cf707f8"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "PDF"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.extraction_strategy }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "b6f92b42-3b43-44d9-95f9-4c9f8c25f6be"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "TXT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.cv_extraction_error }}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true"
+                    },
+                    "id": "3b5382bb-b930-4378-9437-f4b5c6d6ca24"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ERROR"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "187b6829-afe8-4abf-8877-6bb256b39274",
+      "name": "Route by File Type1",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        1136
+      ],
+      "notes": "Splits into PDF, DOCX, TXT, and ERROR branches. Each file type gets a dedicated extraction node."
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "={{ $json.cv_binary_key }}",
+        "options": {
+          "maxPages": 20
+        }
+      },
+      "id": "ccebcc33-7a18-4bb5-9b58-08c9de2f2d92",
+      "name": "Extract Text from PDF1",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        224,
+        880
+      ],
+      "notes": "Uses n8n's native PDF extractor. Reads binary data from the cv_binary_key attachment. Handles multi-page CVs up to 20 pages. Output is in $json.text"
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "id": "3ce0ea53-1ba8-4724-86c8-affda4ce8082",
+      "name": "Extract Text from TXT1",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        224,
+        1168
+      ],
+      "notes": "Plain text extraction for .txt CVs. Rare but handled."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ee1",
+              "name": "cv_extraction_error",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "ee2",
+              "name": "cv_extraction_error_msg",
+              "value": "={{ $json.cv_extraction_error_msg || 'Unsupported file type — cannot extract CV text' }}",
+              "type": "string"
+            },
+            {
+              "id": "ee3",
+              "name": "error_logged_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9aa07dd8-6a21-43ba-a19a-6baf1422e139",
+      "name": "Handle Extraction Error1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        1456
+      ],
+      "notes": "Catches unsupported file types or detection failures. Workflow stops here for this item."
+    },
+    {
+      "parameters": {},
+      "id": "503ed124-48a1-4af5-9b7c-a6217d1e6324",
+      "name": "Merge Extracted CV Text1",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        448,
+        976
+      ],
+      "notes": "Recombines PDF, DOCX, and TXT branches back into a single stream before text normalization."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// CV TEXT NORMALIZER\n// Cleans, deduplicates whitespace, fixes common OCR/extraction\n// artifacts, and validates minimum content length.\n// ─────────────────────────────────────────────────────────────\n\nconst item = $input.item;\nconst meta = item.json;\n\n// The extractFromFile node outputs extracted text in $json.text\nlet rawText = meta.text || meta.content || '';\n\nif (!rawText || rawText.trim().length < 100) {\n  const fallback = $('Set Application Metadata1').item.json.email_body_text || '';\n  if (fallback.length > 200) {\n    rawText = fallback;\n  } else {\n    return {\n      json: {\n        ...meta,\n        cv_raw_text:         '',\n        cv_char_count:       0,\n        cv_word_count:       0,\n        cv_quality:          'insufficient',\n        cv_extraction_error: true,\n        cv_extraction_error_msg: 'Extracted CV text too short (< 100 chars). File may be image-based PDF or corrupted.'\n      },\n      binary: item.binary\n    };\n  }\n}\n\n// Clean the text\nconst cleaned = rawText\n  .replace(/\\r\\n/g, '\\n')\n  .replace(/\\r/g, '\\n')\n  .replace(/\\f/g, '\\n')\n  .replace(/[\\u200B-\\u200D\\uFEFF]/g, '')\n  .replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/g, '')\n  .replace(/[ \\t]{2,}/g, ' ')\n  .replace(/\\n{4,}/g, '\\n\\n\\n')\n  .trim();\n\nconst wordCount = cleaned.split(/\\s+/).filter(Boolean).length;\n\n// Quality assessment\nlet cvQuality = 'good';\nif (cleaned.length < 300)                        cvQuality = 'minimal';\nif (wordCount < 50)                              cvQuality = 'minimal';\nif (cleaned.length > 500  && wordCount > 100)   cvQuality = 'good';\nif (cleaned.length > 2000 && wordCount > 300)   cvQuality = 'excellent';\n\n// Pull metadata from upstream nodes\nconst detectMeta   = $('Set Application Metadata1').item.json;\nconst detectCVMeta = $('Detect CV Attachment Type1').item.json;\n\n// ── Carry JD fields forward from Lookup JD node ───────────────\nlet jdFields = {};\ntry {\n  const jdRow = $('Lookup JD from Google Sheets1').item.json;\n  console.log('jdRow received:', JSON.stringify(jdRow));\n\n  const toArr = (val) => {\n    if (!val || String(val).trim() === '') return [];\n    return String(val).split(',').map(s => s.trim()).filter(Boolean);\n  };\n  const toResp = (val) => {\n    if (!val || String(val).trim() === '') return [];\n    return String(val).split('|').map(s => s.trim()).filter(Boolean);\n  };\n\n  if (jdRow && jdRow.jd_title) {\n    jdFields = {\n      jd_title:                    jdRow.jd_title           || 'Open Role',\n      jd_required_skills:          toArr(jdRow.required_skills),\n      jd_preferred_skills:         toArr(jdRow.preferred_skills),\n      jd_min_years:                parseFloat(jdRow.min_years)        || 0,\n      jd_preferred_years:          parseFloat(jdRow.preferred_years)  || 0,\n      jd_required_education_level: jdRow.required_education || 'bachelor',\n      jd_preferred_certifications: toArr(jdRow.preferred_certifications),\n      jd_responsibilities:         toResp(jdRow.responsibilities),\n      scoring_weights: {\n        skills_match: parseFloat(jdRow.skills_weight)     || 0.50,\n        experience:   parseFloat(jdRow.experience_weight) || 0.30,\n        education:    parseFloat(jdRow.education_weight)  || 0.20\n      }\n    };\n  } else {\n    console.log('jdRow missing jd_title — JD not merged');\n  }\n} catch(e) {\n  console.log('JD lookup carry failed:', e.message);\n}\n\nreturn {\n  json: {\n    application_id:          detectMeta.application_id,\n    applicant_email:         detectMeta.applicant_email,\n    role_id:                 detectMeta.role_id,\n    submitted_at:            detectMeta.submitted_at,\n    source_channel:          detectMeta.source_channel,\n    gmail_message_id:        detectMeta.gmail_message_id,\n    email_subject:           detectMeta.email_subject,\n    email_body_text:         detectMeta.email_body_text,\n    cv_filename:             detectCVMeta.cv_filename        || meta.cv_filename        || '',\n    cv_mime_type:            detectCVMeta.cv_mime_type       || meta.cv_mime_type       || '',\n    extraction_strategy:     detectCVMeta.extraction_strategy || meta.extraction_strategy || '',\n    cv_raw_text:             cleaned,\n    cv_char_count:           cleaned.length,\n    cv_word_count:           wordCount,\n    cv_quality:              cvQuality,\n    cv_extraction_error:     false,\n    ...jdFields\n  }\n};"
+      },
+      "id": "a1ff7553-ac97-4f37-876c-b34869cc2363",
+      "name": "Normalize CV Text1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        976
+      ],
+      "notes": "Critical quality layer: strips OCR artifacts, control characters, excessive whitespace. Falls back to email body text if extracted content is too short (catches image-based PDFs). Computes word/char count and assigns a quality tier."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "pe1",
+              "leftValue": "={{ $json.cv_extraction_error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "61bab216-7b6a-4b98-aadd-b1736464dac8",
+      "name": "CV Extraction OK?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        896,
+        976
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.applicant_email }}",
+        "subject": "Re: Your Application — CV Could Not Be Processed",
+        "message": "=<html><body style=\"font-family:Arial,sans-serif;\">\n<p>Dear Applicant,</p>\n<p>Thank you for applying. Unfortunately, we were unable to extract text from your attached CV (<strong>{{ $json.cv_filename }}</strong>).</p>\n<p>This usually happens when the CV is a scanned image PDF. Please resend your application with a text-searchable PDF or a .docx file.</p>\n<p>We apologize for the inconvenience and look forward to receiving your updated application.</p>\n<p>Best regards,<br>The Hiring Team</p>\n</body></html>",
+        "options": {}
+      },
+      "id": "927e65ea-847c-4212-9067-d6f6d67944ac",
+      "name": "Email Candidate: Resubmit CV1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1184,
+        816
+      ],
+      "webhookId": "fbd58694-0858-4a1d-9c4a-ca428fc5c884",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "vrUYxdhoQEP516lh",
+          "name": "Gmail account"
+        }
+      },
+      "notes": "Automatically emails the candidate asking them to resubmit a text-based CV. Handles scanned/image PDFs gracefully."
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are a CV parsing engine. Extract structured information from the CV text below.\n\nIMPORTANT FAIRNESS RULES — STRICTLY ENFORCED:\n- Do NOT extract or return: name, gender, age, date of birth, ethnicity, nationality, marital status, photo description, home address, religion, or any protected characteristic\n- Extract ONLY: skills, education credentials, work experience (titles + durations + responsibilities), years of experience, certifications, and languages spoken\n\nReturn your answer as a JSON object with this exact schema:\n{\n  \"skills\": [\"skill1\", \"skill2\"],\n  \"education\": [{\"degree\": \"\", \"field\": \"\", \"institution\": \"\", \"year\": \"\"}],\n  \"experience\": [{\"title\": \"\", \"company\": \"REDACTED\", \"duration_months\": 0, \"responsibilities\": [\"...\"], \"technologies_used\": [\"...\"]}],\n  \"total_years_experience\": 0.0,\n  \"certifications\": [\"cert1\"],\n  \"languages\": [\"English\"],\n  \"professional_summary\": \"\",\n  \"notable_achievements\": [\"achievement1\"]\n}\n\nFor duration_months: calculate from dates if present, or estimate from context (e.g. '2 years' = 24).\nFor total_years_experience: sum all non-overlapping professional experience.\n\nCV TEXT:\n{{ $json.cv_raw_text }}\n\nEmail body context (use only if CV text is ambiguous):\n{{ $json.email_body_text }}",
+        "options": {
+          "systemMessage": "You are a precise, bias-free CV parsing assistant. You must respond with ONLY a valid JSON object.\nDo NOT include any text before or after the JSON.\nDo NOT wrap it in markdown code blocks or backticks.\nDo NOT add any explanation, notes, or commentary.\nYour entire response must begin with an opening curly brace and end with a closing curly brace. You never include personally identifying information beyond what is in the schema. You are thorough and extract all technical skills mentioned anywhere in the CV, including from job responsibilities and project descriptions.",
+          "maxIterations": 3,
+          "returnIntermediateSteps": false
+        }
+      },
+      "id": "1e402f2f-a7bb-47ae-8c06-e52950b54bb5",
+      "name": "AI Agent — Parse CV (Bias-Free)1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1120,
+        1120
+      ],
+      "notes": "Native n8n AI Agent node. Replaces the raw OpenAI HTTP request. Uses conversationalAgent mode with a strict bias-free system prompt. Connected to an OpenAI Chat Model sub-node below."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and clean AI agent CV parse output\nconst agentOutput = $input.item.json;\nconst meta        = $('Normalize CV Text1').item.json;\n\n// Pull JD fields from Normalize CV Text node\nconst jdFields = {\n  jd_title:                    meta.jd_title                    || 'Open Role',\n  jd_required_skills:          meta.jd_required_skills          || [],\n  jd_preferred_skills:         meta.jd_preferred_skills         || [],\n  jd_min_years:                meta.jd_min_years                || 0,\n  jd_preferred_years:          meta.jd_preferred_years          || 0,\n  jd_required_education_level: meta.jd_required_education_level || 'bachelor',\n  jd_preferred_certifications: meta.jd_preferred_certifications || [],\n  jd_responsibilities:         meta.jd_responsibilities         || [],\n  scoring_weights:             meta.scoring_weights             || { skills_match: 0.50, experience: 0.30, education: 0.20 }\n};\n\nlet parsed = {};\ntry {\n  const raw     = agentOutput.output || agentOutput.text || '{}';\n  const cleaned = raw.replace(/^```json\\s*/i, '').replace(/```\\s*$/i, '').trim();\n  parsed        = JSON.parse(cleaned);\n} catch(e) {\n  return {\n    json: {\n      ...meta,\n      ...jdFields,\n      parse_error:             true,\n      parse_error_msg:         'CV parse JSON decode failed: ' + e.message,\n      skills:                  [],\n      education:               [],\n      experience:              [],\n      total_years_experience:  0,\n      certifications:          [],\n      languages:               [],\n      professional_summary:    '',\n      notable_achievements:    []\n    }\n  };\n}\n\nreturn {\n  json: {\n    application_id:          meta.application_id,\n    applicant_email:         meta.applicant_email,\n    role_id:                 meta.role_id,\n    submitted_at:            meta.submitted_at,\n    source_channel:          meta.source_channel,\n    gmail_message_id:        meta.gmail_message_id,\n    email_subject:           meta.email_subject,\n    cv_filename:             meta.cv_filename,\n    cv_quality:              meta.cv_quality,\n    cv_word_count:           meta.cv_word_count,\n    parse_error:             false,\n    skills:                  Array.isArray(parsed.skills)               ? parsed.skills               : [],\n    education:               Array.isArray(parsed.education)            ? parsed.education            : [],\n    experience:              Array.isArray(parsed.experience)           ? parsed.experience           : [],\n    total_years_experience:  parseFloat(parsed.total_years_experience)  || 0,\n    certifications:          Array.isArray(parsed.certifications)       ? parsed.certifications       : [],\n    languages:               Array.isArray(parsed.languages)            ? parsed.languages            : [],\n    professional_summary:    parsed.professional_summary                || '',\n    notable_achievements:    Array.isArray(parsed.notable_achievements) ? parsed.notable_achievements : [],\n    ...jdFields\n  }\n};"
+      },
+      "id": "962c3c13-3607-4bf5-a1d9-b7c65085594d",
+      "name": "Extract + Validate CV Structure1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "pe2",
+              "name": "error_type",
+              "value": "cv_parse_failure",
+              "type": "string"
+            },
+            {
+              "id": "pe3",
+              "name": "logged_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "57ef5ead-df32-483f-b2ca-834ed60e1ea5",
+      "name": "Log Parse Error1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1920,
+        1024
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $input.item.json;\n\n// ── 1. SKILLS MATCH (0–100) ──\nconst candidateSkills = (d.skills || []).map(s => s.toLowerCase().trim());\nconst requiredSkills  = (d.jd_required_skills  || []).map(s => s.toLowerCase().trim());\nconst preferredSkills = (d.jd_preferred_skills || []).map(s => s.toLowerCase().trim());\n\nconst implicitSkills = [];\nfor (const exp of (d.experience || [])) {\n  for (const tech of (exp.technologies_used || [])) {\n    implicitSkills.push(tech.toLowerCase().trim());\n  }\n}\nconst allCandidateSkills = [...new Set([...candidateSkills, ...implicitSkills])];\n\nconst matchSkill = (haystack, needle) =>\n  haystack.some(c => c.includes(needle) || needle.includes(c));\n\nconst matchedRequired  = requiredSkills.filter(s => matchSkill(allCandidateSkills, s));\nconst matchedPreferred = preferredSkills.filter(s => matchSkill(allCandidateSkills, s));\nconst missingRequired  = requiredSkills.filter(s => !matchSkill(allCandidateSkills, s));\n\nconst requiredScore  = requiredSkills.length  > 0 ? (matchedRequired.length  / requiredSkills.length)  * 70 : 70;\nconst preferredScore = preferredSkills.length > 0 ? (matchedPreferred.length / preferredSkills.length) * 30 : 15;\nlet skillsScore = Math.min(100, requiredScore + preferredScore);\nif (matchedRequired.length === 0 && requiredSkills.length > 0) skillsScore = Math.min(skillsScore, 20);\n\n// ── 2. EXPERIENCE (0–100) ──\nconst yearsExp       = parseFloat(d.total_years_experience) || 0;\nconst minYears       = d.jd_min_years       || 0;\nconst preferredYears = d.jd_preferred_years || minYears;\n\nlet experienceScore = 0;\nif (yearsExp >= preferredYears)           experienceScore = 100;\nelse if (yearsExp >= minYears)            experienceScore = 70 + ((yearsExp - minYears) / Math.max(preferredYears - minYears, 1)) * 30;\nelse if (yearsExp >= minYears * 0.75)     experienceScore = 50;\nelse if (yearsExp > 0)                    experienceScore = 20 + (yearsExp / Math.max(minYears, 1)) * 30;\nexperienceScore = Math.round(Math.min(100, experienceScore));\n\n// ── 3. EDUCATION (0–100) ──\nconst EDUCATION_LEVELS = { none: 0, high_school: 1, associate: 2, bachelor: 3, master: 4, phd: 5 };\nconst requiredLevel = EDUCATION_LEVELS[d.jd_required_education_level] || 0;\n\nconst EDU_KEYWORDS = {\n  phd:         ['phd', 'doctorate', 'doctor of'],\n  master:      ['master', 'msc', 'mba', 'ma ', 'ms '],\n  bachelor:    ['bachelor', 'bsc', 'ba ', 'b.s', 'b.a', 'beng', 'be '],\n  associate:   ['associate', 'hnd', 'ond'],\n  high_school: ['high school', 'secondary', 'a-level', 'diploma', 'waec', 'neco']\n};\n\nlet highestEduLevel = 0;\nfor (const edu of (d.education || [])) {\n  const degreeText = ((edu.degree || '') + ' ' + (edu.field || '')).toLowerCase();\n  for (const [level, keywords] of Object.entries(EDU_KEYWORDS)) {\n    if (keywords.some(kw => degreeText.includes(kw))) {\n      highestEduLevel = Math.max(highestEduLevel, EDUCATION_LEVELS[level] || 0);\n    }\n  }\n}\n\nlet educationScore = 0;\nif      (highestEduLevel >= requiredLevel + 1)  educationScore = 100;\nelse if (highestEduLevel === requiredLevel)      educationScore = 80;\nelse if (highestEduLevel === requiredLevel - 1)  educationScore = 50;\nelse                                             educationScore = 20;\n\nconst preferredCerts = (d.jd_preferred_certifications || []).map(c => c.toLowerCase());\nconst candidateCerts = (d.certifications || []).map(c => c.toLowerCase());\nconst certBonus = preferredCerts.filter(c => candidateCerts.some(cc => cc.includes(c))).length * 5;\neducationScore = Math.min(100, educationScore + certBonus);\n\n// ── 4. COMPOSITE ──\nconst w = d.scoring_weights || { skills_match: 0.50, experience: 0.30, education: 0.20 };\nconst compositeScore = Math.round(\n  (skillsScore     * w.skills_match) +\n  (experienceScore * w.experience)   +\n  (educationScore  * w.education)\n);\n\nlet fitTier = 'Weak Fit';\nif (compositeScore >= 75)      fitTier = 'Strong Fit';\nelse if (compositeScore >= 50) fitTier = 'Moderate Fit';\n\nreturn {\n  json: {\n    ...d,\n    all_candidate_skills:     allCandidateSkills,\n    score_breakdown: {\n      skills_score:     Math.round(skillsScore),\n      experience_score: experienceScore,\n      education_score:  Math.round(educationScore)\n    },\n    composite_score:          compositeScore,\n    fit_tier:                 fitTier,\n    matched_required_skills:  matchedRequired,\n    matched_preferred_skills: matchedPreferred,\n    missing_required_skills:  missingRequired,\n    years_experience:         yearsExp,\n    education_level_detected: Object.keys(EDUCATION_LEVELS).find(k => EDUCATION_LEVELS[k] === highestEduLevel) || 'none',\n    scored_at:                new Date().toISOString()\n  }\n};"
+      },
+      "id": "9d1a6ce4-74a3-4fc4-942f-6a864c3cb81b",
+      "name": "Scoring Engine (Weighted)1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        1216
+      ]
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are an HR explainability engine. Generate a clear, fair, objective explanation of this candidate's scoring. Focus ONLY on skills, experience, and qualifications. Do NOT mention or infer name, gender, age, or ethnicity.\n\nRole: {{ $('Lookup JD from Google Sheets1').item.json.jd_title }}\nCandidate Score: {{ $json.composite_score }}/100\nFit Tier: {{ $json.fit_tier }}\n\nScore Breakdown:\n- Skills Score: {{ $json.score_breakdown.skills_score }}/100 (weight: 50%)\n- Experience Score: {{ $json.score_breakdown.experience_score }}/100 (weight: 30%)\n- Education Score: {{ $json.score_breakdown.education_score }}/100 (weight: 20%)\n\nMatched Required Skills: {{ JSON.stringify($json.matched_required_skills) }}\nMissing Required Skills: {{ JSON.stringify($json.missing_required_skills) }}\nMatched Preferred Skills: {{ JSON.stringify($json.matched_preferred_skills) }}\nYears Experience: {{ $json.years_experience }} (Role requires: {{ $('Lookup JD from Google Sheets1').item.json.min_years }} min, {{ $('Lookup JD from Google Sheets1').item.json.preferred_years }} preferred)\nEducation Level: {{ $json.education_level_detected }} (Required: {{ $('Lookup JD from Google Sheets1').item.json.required_education }})\nCertifications: {{ JSON.stringify($json.certifications) }}\nNotable Achievements: {{ JSON.stringify($json.notable_achievements) }}\n\nReturn a JSON object with exactly these fields:\n{\n  \"overall_summary\": \"2-3 sentences\",\n  \"strengths\": [\"strength1\", \"strength2\", \"strength3\"],\n  \"gaps\": [\"gap1\", \"gap2\"],\n  \"missing_skills_assessment\": \"one sentence on missing skills importance\",\n  \"experience_assessment\": \"one sentence\",\n  \"education_assessment\": \"one sentence\",\n  \"recommendation\": \"one clear recruiter recommendation\",\n  \"red_flags\": []\n}",
+        "options": {
+          "systemMessage": "You are a fair, transparent HR assessment assistant. You explain scoring decisions in plain language. You only reference qualifications and skills — never personal characteristics. You return only valid JSON.",
+          "maxIterations": 2,
+          "returnIntermediateSteps": false
+        }
+      },
+      "id": "f20bd44a-0f48-4cd8-ae32-0dd438ea87cd",
+      "name": "AI Agent — Explainability Engine1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        2144,
+        1216
+      ],
+      "notes": "Native AI Agent node replacing the OpenAI HTTP request for explainability. Uses gpt-4o-mini for speed and cost efficiency."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge explanation into candidate record\nconst agentOut = $input.item.json;\nconst prev     = $('Scoring Engine (Weighted)1').item.json;\n\nlet explanation = {};\ntry {\n  const raw     = agentOut.output || agentOut.text || '{}';\n  const cleaned = raw.replace(/^```json\\s*/i, '').replace(/```\\s*$/i, '').trim();\n  explanation   = JSON.parse(cleaned);\n} catch(e) {\n  explanation = {\n    overall_summary:          'Explanation unavailable.',\n    strengths:                prev.matched_required_skills || [],\n    gaps:                     prev.missing_required_skills || [],\n    missing_skills_assessment:'',\n    experience_assessment:    '',\n    education_assessment:     '',\n    recommendation:           'Manual review recommended.',\n    red_flags:                []\n  };\n}\n\nreturn { json: { ...prev, explanation } };"
+      },
+      "id": "b6c5875c-09e2-4758-9447-ce5fb8cc5ee7",
+      "name": "Attach Explanation to Record1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2496,
+        1216
+      ]
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are a senior technical interviewer and HR specialist. Generate a tailored, high-quality interview question set for an anonymous candidate applying for the role below.\n\nRole: {{ $json.jd_title }}\nKey Responsibilities:\n{{ $json.jd_responsibilities.join('\\n') }}\n\nCandidate Profile (anonymous — no PII):\n- All Skills: {{ JSON.stringify($json.all_candidate_skills) }}\n- Years Experience: {{ $json.years_experience }}\n- Matched Required Skills: {{ JSON.stringify($json.matched_required_skills) }}\n- Missing Required Skills: {{ JSON.stringify($json.missing_required_skills) }}\n- Matched Preferred Skills: {{ JSON.stringify($json.matched_preferred_skills) }}\n- Education Level: {{ $json.education_level_detected }}\n- Certifications: {{ JSON.stringify($json.certifications) }}\n- Notable Achievements: {{ JSON.stringify($json.notable_achievements) }}\n- Fit Tier: {{ $json.fit_tier }} (Score: {{ $json.composite_score }}/100)\n- Recruiter Context: {{ $json.explanation.overall_summary }}\n\nGenerate exactly:\n- 3 Technical questions (tied to their specific skill set + missing skills)\n- 3 Behavioral questions (STAR-format, based on role responsibilities)\n- 2 Scenario-based questions (realistic situations in this role)\n- 2 Gap-probing questions (targeting each missing required skill)\n\nReturn valid JSON:\n{\n  \"technical_questions\": [{\"question\": \"\", \"purpose\": \"\", \"expected_indicators\": \"\"}],\n  \"behavioral_questions\": [{\"question\": \"\", \"purpose\": \"\", \"what_to_listen_for\": \"\"}],\n  \"scenario_questions\": [{\"question\": \"\", \"purpose\": \"\", \"ideal_approach\": \"\"}],\n  \"gap_probing_questions\": [{\"question\": \"\", \"missing_skill\": \"\", \"acceptable_answer\": \"\"}]\n}",
+        "options": {
+          "systemMessage": "You are an expert technical interviewer. You generate insightful, role-specific interview questions. You base questions entirely on professional qualifications and skills — never on personal characteristics. You return only valid JSON.",
+          "maxIterations": 2,
+          "returnIntermediateSteps": false
+        }
+      },
+      "id": "106ec704-d0a9-4f88-82a6-07862da23427",
+      "name": "AI Agent — Generate Interview Questions1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        2944,
+        960
+      ],
+      "notes": "Native AI Agent node replacing the OpenAI HTTP request for question generation. Uses gpt-4o for highest quality questions."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the final complete candidate record\nconst agentOut = $input.item.json;\nconst prev     = $('Attach Explanation to Record1').item.json;\n\nlet questions = {};\ntry {\n  const raw     = agentOut.output || agentOut.text || '{}';\n  const cleaned = raw.replace(/^```json\\s*/i, '').replace(/```\\s*$/i, '').trim();\n  questions     = JSON.parse(cleaned);\n} catch(e) {\n  questions = { technical_questions: [], behavioral_questions: [], scenario_questions: [], gap_probing_questions: [] };\n}\n\nreturn {\n  json: {\n    application_id:           prev.application_id,\n    applicant_email:          prev.applicant_email,\n    role_id:                  prev.role_id,\n    jd_title:                 prev.jd_title,\n    submitted_at:             prev.submitted_at,\n    source_channel:           prev.source_channel,\n    gmail_message_id:         prev.gmail_message_id,\n    cv_filename:              prev.cv_filename,\n    cv_quality:               prev.cv_quality,\n    composite_score:          prev.composite_score,\n    fit_tier:                 prev.fit_tier,\n    score_breakdown:          prev.score_breakdown,\n    skills:                   prev.skills,\n    all_candidate_skills:     prev.all_candidate_skills,\n    matched_required_skills:  prev.matched_required_skills,\n    missing_required_skills:  prev.missing_required_skills,\n    matched_preferred_skills: prev.matched_preferred_skills,\n    years_experience:         prev.years_experience,\n    education_level_detected: prev.education_level_detected,\n    certifications:           prev.certifications,\n    notable_achievements:     prev.notable_achievements,\n    jd_required_skills:       prev.jd_required_skills,\n    jd_preferred_skills:      prev.jd_preferred_skills,\n    jd_responsibilities:      prev.jd_responsibilities,\n    explanation:              prev.explanation,\n    interview_questions:      questions,\n    processing_status:        'scored',\n    processed_at:             new Date().toISOString()\n  }\n};"
+      },
+      "id": "d81466b3-1db2-4980-b79b-c80dee2d4152",
+      "name": "Build Complete Candidate Record1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3296,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM",
+          "mode": "list",
+          "cachedResultName": "HR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Candidates",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "application_id"
+          ],
+          "schema": [
+            {
+              "id": "applicant_name",
+              "displayName": "applicant_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "applicant_email",
+              "displayName": "applicant_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "role_id",
+              "displayName": "role_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "application_id",
+              "displayName": "application_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "submitted_at",
+              "displayName": "submitted_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "source_channel",
+              "displayName": "source_channel",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "gmail_message_id",
+              "displayName": "gmail_message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cv_filename",
+              "displayName": "cv_filename",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cv_quality",
+              "displayName": "cv_quality",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "composite_score",
+              "displayName": "composite_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "fit_tier",
+              "displayName": "fit_tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "score_breakdown",
+              "displayName": "score_breakdown",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "skills",
+              "displayName": "skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "all_candidate_skills",
+              "displayName": "all_candidate_skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "matched_required_skills",
+              "displayName": "matched_required_skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "missing_required_skills",
+              "displayName": "missing_required_skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "matched_preferred_skills",
+              "displayName": "matched_preferred_skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "years_experience",
+              "displayName": "years_experience",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "education_level_detected",
+              "displayName": "education_level_detected",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "certifications",
+              "displayName": "certifications",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "notable_achievements",
+              "displayName": "notable_achievements",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "explanation",
+              "displayName": "explanation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "interview_questions",
+              "displayName": "interview_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jd_title",
+              "displayName": "jd_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jd_required_skills",
+              "displayName": "jd_required_skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jd_preferred_skills",
+              "displayName": "jd_preferred_skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "jd_responsibilities",
+              "displayName": "jd_responsibilities",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "624109b3-642d-4688-b3d6-1345ea94af23",
+      "name": "Store Candidate → Google Sheets1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3520,
+        1072
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Gmail Trigger — New Application Email1').item.json.id }}",
+        "labelIds": [
+          "Label_2814476582839159508"
+        ]
+      },
+      "id": "f771337f-025f-4f01-880b-308ba05b373a",
+      "name": "Label Email as HR-Processed1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3744,
+        1072
+      ],
+      "webhookId": "e226bcbd-cf04-4943-a23e-b71f6b69bb9b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Qc3NUOKHPPpwr3AY",
+          "name": "Gmail account 2"
+        }
+      },
+      "notes": "Adds 'hr-processed' Gmail label so the trigger filter skips it next poll. Create this label in Gmail first. Replace Label_HRProcessed with the actual label ID from your Gmail account."
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Store Candidate → Google Sheets1').item.json.applicant_email }}",
+        "subject": "={{ 'Interview Invitation — ' + $('Store Candidate → Google Sheets1').item.json.jd_title }}",
+        "message": "=<html>\n<body style=\"font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#333;line-height:1.6;\">\n  <div style=\"background:#1a73e8;padding:20px;border-radius:6px 6px 0 0;\">\n    <h2 style=\"color:white;margin:0;\">Interview Invitation</h2>\n  </div>\n  <div style=\"padding:25px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 6px 6px;\">\n    <p>Dear Applicant,</p>\n    <p>Thank you for your interest in the <strong>{{ $('Store Candidate → Google Sheets1').item.json.jd_title }}</strong> position. After reviewing your application, we are delighted to invite you to the next stage of our hiring process.</p>\n    <div style=\"background:#f0f7ff;padding:18px;border-radius:6px;margin:20px 0;border-left:4px solid #1a73e8;\">\n      <h3 style=\"margin:0 0 10px;color:#1a73e8;\">Book Your Interview Slot</h3>\n      <p style=\"margin:0 0 15px;\">Please use the link below to select a time that works best for you:</p>\n      <a href=\"https://calendly.com/adetunjimuhammed26/30min?name={{ $json.applicant_name }}&email={{ $('Store Candidate → Google Sheets1').item.json.applicant_email }}&a1={{ $('Store Candidate → Google Sheets1').item.json.jd_title }}\" style=\"background:#1a73e8;color:white;padding:12px 24px;border-radius:4px;text-decoration:none;display:inline-block;font-weight:bold;\">Choose Interview Time</a>\n    </div>\n    <p><strong>Interview Format:</strong> 45–60 minutes (technical + experience discussion)</p>\n    <p><strong>Role:</strong> {{ $('Store Candidate → Google Sheets1').item.json.jd_title }}</p>\n    <p><strong>Application ID:</strong> {{ $('Store Candidate → Google Sheets1').item.json.application_id }}</p>\n    <p>If you have any questions, please reply directly to this email.</p>\n    <p style=\"margin-top:25px;\">We look forward to speaking with you!</p>\n    <p>Best regards,<br><strong>The Hiring Team</strong></p>\n  </div>\n</body>\n</html>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "efe3fc1b-b06a-4d1e-a0f5-2977040e6248",
+      "name": "Send Interview Invitation Email1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        4192,
+        880
+      ],
+      "webhookId": "b20c9f25-730e-4dd2-8af1-389aee645edd",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Qc3NUOKHPPpwr3AY",
+          "name": "Gmail account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "adetunjimuhammed26@gmail.com",
+          "mode": "list",
+          "cachedResultName": "adetunjimuhammed26@gmail.com"
+        },
+        "start": "={{ $now.plus({ days: 3 }).startOf('hour').toISO() }}",
+        "end": "={{ $now.plus({ days: 10, hours: 1 }).startOf('hour').toISO() }}",
+        "additionalFields": {
+          "attendees": [
+            "={{ $('Store Candidate → Google Sheets1').item.json.applicant_email }}"
+          ],
+          "description": "={{ \n  'Application ID: ' + $('Store Candidate → Google Sheets1').item.json.application_id + \n  '\\nRole: ' + $('Store Candidate → Google Sheets1').item.json.jd_title + \n  '\\nScore: ' + $('Store Candidate → Google Sheets1').item.json.composite_score + '/100 (' + $('Store Candidate → Google Sheets1').item.json.fit_tier + ')' +\n  '\\nCV File: ' + $('Store Candidate → Google Sheets1').item.json.cv_filename + \n  '\\n\\n--- AI ASSESSMENT ---\\n' + \n  ($('Store Candidate → Google Sheets1').item.json.overall_summary || '') + \n  '\\n\\nStrengths: ' + ($('Store Candidate → Google Sheets1').item.json.strengths || []).join(', ') + \n  '\\nGaps to probe: ' + ($('Store Candidate → Google Sheets1').item.json.missing_required || []).join(', ') + \n  '\\n\\n--- INTERVIEW QUESTIONS ---\\n\\nTECHNICAL:\\n' + \n  ($('AI Agent — Generate Interview Questions1').item.json.output || '')\n}}"
+        }
+      },
+      "id": "bfe2158d-c50c-4343-be50-40396e9b381e",
+      "name": "Create Google Calendar Event1",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        4192,
+        1312
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "6rZBSCSsCimV2gYj",
+          "name": "Google Calendar account"
+        }
+      },
+      "disabled": true,
+      "notes": "Calendar description includes full interview question set so interviewers are always prepared."
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.item.json;\n\n// AI Agent returns questions as a JSON string inside .output — must parse it first\nlet iq = {};\ntry {\n  const raw = $('AI Agent — Generate Interview Questions1').item.json.output || '';\n  // Strip markdown fences if present\n  const cleaned = raw.replace(/```json|```/gi, '').trim();\n  const start = cleaned.indexOf('{');\n  const end   = cleaned.lastIndexOf('}');\n  if (start !== -1 && end !== -1) {\n    iq = JSON.parse(cleaned.slice(start, end + 1));\n  }\n} catch(e) {\n  iq = {};\n}\n\nconst technical  = iq.technical_questions      || [];\nconst behavioral = iq.behavioral_questions     || [];\nconst gapProbing = iq.gap_probing_questions    || [];\nconst scenario   = iq.scenario_questions       || [];\n\nconst questionsText = [\n  ...technical.map((q, i)  => `T${i+1}: ${q.question || q}`),\n  ...behavioral.map((q, i) => `B${i+1}: ${q.question || q}`),\n  ...gapProbing.map((q, i) => `GP${i+1}: ${q.question || q}${q.missing_skill ? ' [' + q.missing_skill + ']' : ''}`),\n  ...scenario.map((q, i)   => `S${i+1}: ${q.question || q}`)\n].join('\\n');\n\nreturn {\n  json: {\n    ...d,\n    questions_text_preview: questionsText || 'No interview questions generated'\n  }\n};"
+      },
+      "id": "c343f3e9-06b1-40d6-a5a6-85bf5ba1deaa",
+      "name": "Format Recruiter Notification1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3968,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "adetunjimuhammed26@gmail.com",
+        "subject": "={{ '[' + $('Store Candidate → Google Sheets1').item.json.fit_tier + '] ' + $('Store Candidate → Google Sheets1').item.json.jd_title + ' Application — Score: ' + $('Store Candidate → Google Sheets1').item.json.composite_score + '/100' }}",
+        "message": "=<html>\n<body style=\"font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#333;\">\n  <div style=\"background:#1a73e8;padding:20px;border-radius:6px 6px 0 0;\">\n    <h2 style=\"color:white;margin:0;\">{{ $('Store Candidate → Google Sheets1').item.json.fit_tier }} — {{ $('Store Candidate → Google Sheets1').item.json.role_id }}</h2>\n    <p style=\"color:#e8f0fe;margin:5px 0 0;\">Application ID: {{ $('Store Candidate → Google Sheets1').item.json.application_id }} | Score: {{ $('Store Candidate → Google Sheets1').item.json.composite_score }}/100</p>\n  </div>\n  <div style=\"padding:25px;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 6px 6px;\">\n\n    <table style=\"width:100%;border-collapse:collapse;margin-bottom:20px;\">\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;width:35%;\">Email</td><td style=\"padding:8px;\">{{ $('Store Candidate → Google Sheets1').item.json.applicant_email }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;\">Role</td><td style=\"padding:8px;\">{{ $('Store Candidate → Google Sheets1').item.json.role_id }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;\">CV File</td><td style=\"padding:8px;\">{{ $('Store Candidate → Google Sheets1').item.json.cv_filename }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;\">CV Quality</td><td style=\"padding:8px;\">{{ $('Store Candidate → Google Sheets1').item.json.cv_quality }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;\">Overall Score</td><td style=\"padding:8px;\"><strong style=\"font-size:18px;color:#1a73e8;\">{{ $('Store Candidate → Google Sheets1').item.json.composite_score }}/100</strong></td></tr>\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;\">Fit Tier</td><td style=\"padding:8px;\">{{ $('Store Candidate → Google Sheets1').item.json.fit_tier }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;\">Years Experience</td><td style=\"padding:8px;\">{{ $('Store Candidate → Google Sheets1').item.json.years_experience }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f8f9fa;font-weight:bold;\">Education Level</td><td style=\"padding:8px;\">{{ $('Store Candidate → Google Sheets1').item.json.education_level_detected }}</td></tr>\n    </table>\n\n    <h3 style=\"color:#1a73e8;border-bottom:1px solid #e0e0e0;padding-bottom:8px;\">Score Breakdown</h3>\n    <table style=\"width:100%;border-collapse:collapse;margin-bottom:20px;\">\n      <tr style=\"background:#e8f0fe;\"><th style=\"text-align:left;padding:8px;\">Dimension</th><th style=\"text-align:left;padding:8px;\">Score</th><th style=\"text-align:left;padding:8px;\">Weight</th></tr>\n      <tr><td style=\"padding:8px;\">Skills Match</td><td style=\"padding:8px;\"><strong>{{ $('Store Candidate → Google Sheets1').item.json.score_breakdown.skills_score }}/100</strong></td><td style=\"padding:8px;\">50%</td></tr>\n      <tr><td style=\"padding:8px;\">Experience</td><td style=\"padding:8px;\"><strong>{{ $('Store Candidate → Google Sheets1').item.json.score_breakdown.experience_score }}/100</strong></td><td style=\"padding:8px;\">30%</td></tr>\n      <tr><td style=\"padding:8px;\">Education</td><td style=\"padding:8px;\"><strong>{{ $('Store Candidate → Google Sheets1').item.json.score_breakdown.education_score }}/100</strong></td><td style=\"padding:8px;\">20%</td></tr>\n    </table>\n\n    <h3 style=\"color:#1a73e8;border-bottom:1px solid #e0e0e0;padding-bottom:8px;\">Skills Analysis</h3>\n    <p><strong>✅ Matched Required:</strong> {{ $('Store Candidate → Google Sheets1').item.json.matched_required_skills }}</p>\n    <p><strong>❌ Missing Required:</strong> {{ $('Store Candidate → Google Sheets1').item.json.missing_required_skills }}</p>\n    <p><strong>⭐ Matched Preferred:</strong> {{ $('Store Candidate → Google Sheets1').item.json.matched_preferred_skills }}</p>\n    <p><strong>📜 Certifications:</strong> {{ $('Store Candidate → Google Sheets1').item.json.certifications }}</p>\n\n    <h3 style=\"color:#1a73e8;border-bottom:1px solid #e0e0e0;padding-bottom:8px;\">AI Assessment</h3>\n    <p>{{ $('Store Candidate → Google Sheets1').item.json.explanation.overall_summary }}</p>\n    <p><strong>Strengths:</strong> {{ $('Store Candidate → Google Sheets1').item.json.explanation.strengths }}</p>\n    <p><strong>Gaps:</strong> {{ $('Store Candidate → Google Sheets1').item.json.explanation.gaps }}</p>\n    <p><strong>Experience:</strong> {{ $('Store Candidate → Google Sheets1').item.json.explanation.experience_assessment }}</p>\n    <p><strong>Education:</strong> {{ $('Store Candidate → Google Sheets1').item.json.explanation.education_assessment }}</p>\n    <p><strong>Recommendation:</strong> <em>{{ $('Store Candidate → Google Sheets1').item.json.explanation.recommendation }}</em></p>\n\n    <h3 style=\"color:#1a73e8;border-bottom:1px solid #e0e0e0;padding-bottom:8px;\">Interview Questions</h3>\n    <h4>Technical</h4>\n    \n   <h4>Behavioral</h4>\n{{ ($('Build Complete Candidate Record1').item.json.interview_questions.behavioral_questions || []).map((q, i) => '<p><strong>B' + (i+1) + ':</strong> ' + q.question + '<br><em style=\"color:#666;\">Listen for: ' + q.what_to_listen_for + '</em></p>').join('') }}\n\n<h4>Scenario</h4>\n{{ ($('Build Complete Candidate Record1').item.json.interview_questions.scenario_questions || []).map((q, i) => '<p><strong>S' + (i+1) + ':</strong> ' + q.question + '<br><em style=\"color:#666;\">Ideal approach: ' + q.ideal_approach + '</em></p>').join('') }}\n\n<h4>Gap-Probing</h4>\n{{ ($('Build Complete Candidate Record1').item.json.interview_questions.gap_probing_questions || []).map((q, i) => '<p><strong>GP' + (i+1) + ':</strong> ' + q.question + '<br><em style=\"color:#666;\">Missing skill: ' + q.missing_skill + ' | Acceptable answer: ' + q.acceptable_answer + '</em></p>').join('') }}\n\n    <hr style=\"border:none;border-top:1px solid #e0e0e0;margin:20px 0;\">\n    <p style=\"font-size:12px;color:#999;\">Processed: {{ $('Store Candidate → Google Sheets1').item.json.processed_at }} | App ID: {{ $('Store Candidate → Google Sheets1').item.json.application_id }} | CV Quality: {{ $('Store Candidate → Google Sheets1').item.json.cv_quality }}</p>\n  </div>\n</body>\n</html>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "3d466191-52f9-42a9-bf4f-9e6f8ff81470",
+      "name": "Send Recruiter Report Email1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        4192,
+        1072
+      ],
+      "webhookId": "4bd031b5-b015-46b4-8606-d49576807d12",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Qc3NUOKHPPpwr3AY",
+          "name": "Gmail account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "98b5bba2-7562-475b-b947-f16ad22098bf",
+              "name": "application_id",
+              "value": "={{ $('Set Application Metadata1').item.json.application_id }}",
+              "type": "string"
+            },
+            {
+              "id": "047a51e1-12a2-4fe0-af45-79a85317233d",
+              "name": "applicant_email",
+              "value": "={{ $('Set Application Metadata1').item.json.applicant_email }}",
+              "type": "string"
+            },
+            {
+              "id": "124a774d-7485-47cb-895a-ebb646fb6207",
+              "name": "applicant_name_raw",
+              "value": "={{ $('Set Application Metadata1').item.json.applicant_name_raw }}",
+              "type": "string"
+            },
+            {
+              "id": "6bddfa29-74c5-43cf-b756-b303807e7e71",
+              "name": "email_subject",
+              "value": "={{ $('Set Application Metadata1').item.json.email_subject }}",
+              "type": "string"
+            },
+            {
+              "id": "efa278d0-1c3c-4be7-9e40-848b75355948",
+              "name": "email_body_text",
+              "value": "={{ $('Set Application Metadata1').item.json.email_body_text }}",
+              "type": "string"
+            },
+            {
+              "id": "c6b88ae5-8a04-4e27-b2e0-855e6b43e9be",
+              "name": "gmail_message_id",
+              "value": "={{ $('Set Application Metadata1').item.json.gmail_message_id }}",
+              "type": "string"
+            },
+            {
+              "id": "ae901d25-37cf-4b76-bcb9-42713707b744",
+              "name": "submitted_at",
+              "value": "={{ $('Set Application Metadata1').item.json.submitted_at }}",
+              "type": "string"
+            },
+            {
+              "id": "03ba4740-8ce5-4759-83d4-b953d0e2046a",
+              "name": "source_channel",
+              "value": "={{ $('Set Application Metadata1').item.json.source_channel }}",
+              "type": "string"
+            },
+            {
+              "id": "6a7bf8b0-51ca-4388-892e-e81c70f6e7b7",
+              "name": "role_id",
+              "value": "={{ $('Set Application Metadata1').item.json.role_id }}",
+              "type": "string"
+            },
+            {
+              "id": "869c7a20-85e8-42bd-8dac-3bb47624f3c7",
+              "name": "attachment_count",
+              "value": "={{ $('Set Application Metadata1').item.json.attachment_count }}",
+              "type": "number"
+            },
+            {
+              "id": "5160929b-a785-4548-8507-43bd98ea2bb9",
+              "name": "attachment_name",
+              "value": "={{ $('Set Application Metadata1').item.json.attachment_name }}",
+              "type": "string"
+            },
+            {
+              "id": "4b7ea456-5e32-49b1-b171-bef38267b323",
+              "name": "attachment_mime",
+              "value": "={{ $('Set Application Metadata1').item.json.attachment_mime }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -448,
+        1168
+      ],
+      "id": "41dae800-f96f-4ff7-8768-207034f18dd2",
+      "name": "Restore binary data1",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-5-20250929",
+          "cachedResultName": "Claude Sonnet 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        1200,
+        1344
+      ],
+      "id": "30d0219d-31b3-4e17-97c2-f7c61f10b588",
+      "name": "Anthropic Chat Model3",
+      "credentials": {
+        "anthropicApi": {
+          "id": "K4fErlXLVpqDW58G",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-5-20250929",
+          "cachedResultName": "Claude Sonnet 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        2224,
+        1440
+      ],
+      "id": "6266745c-237b-4ad0-98cc-752bbb556ac2",
+      "name": "Anthropic Chat Model4",
+      "credentials": {
+        "anthropicApi": {
+          "id": "K4fErlXLVpqDW58G",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-5-20250929",
+          "cachedResultName": "Claude Sonnet 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        3024,
+        1184
+      ],
+      "id": "f6da252d-8080-4f6a-a4cf-ccc7b1f67348",
+      "name": "Anthropic Chat Model5",
+      "credentials": {
+        "anthropicApi": {
+          "id": "K4fErlXLVpqDW58G",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM",
+          "mode": "list",
+          "cachedResultName": "HR",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 976119046,
+          "mode": "list",
+          "cachedResultName": "Job Descriptions",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/189C_3U2ceXgyUqyJadsUwBtgNhcHxZ7wqK4Jhc3gUmM/edit#gid=976119046"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "role_id",
+              "lookupValue": "={{ $json.role_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c637469f-c67a-4dfe-a51c-264d10cbf23e",
+      "name": "Lookup JD from Google Sheets1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1344,
+        1168
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Looks up the Job Descriptions sheet by role_id. Sheet columns: role_id, jd_title, required_skills (comma-sep), preferred_skills (comma-sep), min_years, preferred_years, required_education, preferred_certifications (comma-sep), responsibilities (pipe-sep), skills_weight, experience_weight, education_weight. Add a new row per role — no workflow editing needed."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3b14483f-e4c8-4b22-9e0d-07d4f95ea882",
+              "leftValue": "={{ $json.composite_score }}",
+              "rightValue": 50,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2720,
+        1216
+      ],
+      "id": "365d84e2-51a6-4b50-b14f-603f47a832c6",
+      "name": "Is Worth Interviewing?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.item.json;\n\nreturn {\n  json: {\n    ...d,\n    interview_questions: null,\n    rejection_reason: `Score too low for interview (${d.composite_score}/100 — ${d.fit_tier}). Minimum threshold: 50.`,\n    rejected_at: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3008,
+        1360
+      ],
+      "id": "bcd0b0a3-0f42-4fa8-8f8a-41f41f3b52b1",
+      "name": "Log Unfit Candidates"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger — New Application Email1": {
+      "main": [
+        [
+          {
+            "node": "Set Application Metadata1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Application Metadata1": {
+      "main": [
+        [
+          {
+            "node": "Lookup JD from Google Sheets1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate: Has Email + Attachment1": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate in Google Sheets1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Skipped Email1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Duplicate in Google Sheets1": {
+      "main": [
+        [
+          {
+            "node": "Is Duplicate Application?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Duplicate Application?1": {
+      "main": [
+        [
+          {
+            "node": "Log Duplicate — Stop1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore binary data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect CV Attachment Type1": {
+      "main": [
+        [
+          {
+            "node": "Route by File Type1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by File Type1": {
+      "main": [
+        [
+          {
+            "node": "Extract Text from PDF1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Text from TXT1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Extraction Error1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text from PDF1": {
+      "main": [
+        [
+          {
+            "node": "Merge Extracted CV Text1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Extracted CV Text1": {
+      "main": [
+        [
+          {
+            "node": "Normalize CV Text1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize CV Text1": {
+      "main": [
+        [
+          {
+            "node": "CV Extraction OK?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CV Extraction OK?1": {
+      "main": [
+        [
+          {
+            "node": "Email Candidate: Resubmit CV1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Agent — Parse CV (Bias-Free)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent — Parse CV (Bias-Free)1": {
+      "main": [
+        [
+          {
+            "node": "Extract + Validate CV Structure1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract + Validate CV Structure1": {
+      "main": [
+        [
+          {
+            "node": "Log Parse Error1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Scoring Engine (Weighted)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scoring Engine (Weighted)1": {
+      "main": [
+        [
+          {
+            "node": "AI Agent — Explainability Engine1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent — Explainability Engine1": {
+      "main": [
+        [
+          {
+            "node": "Attach Explanation to Record1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Explanation to Record1": {
+      "main": [
+        [
+          {
+            "node": "Is Worth Interviewing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent — Generate Interview Questions1": {
+      "main": [
+        [
+          {
+            "node": "Build Complete Candidate Record1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Complete Candidate Record1": {
+      "main": [
+        [
+          {
+            "node": "Store Candidate → Google Sheets1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Candidate → Google Sheets1": {
+      "main": [
+        [
+          {
+            "node": "Label Email as HR-Processed1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label Email as HR-Processed1": {
+      "main": [
+        [
+          {
+            "node": "Format Recruiter Notification1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Interview Invitation Email1": {
+      "main": [
+        []
+      ]
+    },
+    "Create Google Calendar Event1": {
+      "main": [
+        []
+      ]
+    },
+    "Format Recruiter Notification1": {
+      "main": [
+        [
+          {
+            "node": "Send Recruiter Report Email1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Interview Invitation Email1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create Google Calendar Event1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore binary data1": {
+      "main": [
+        [
+          {
+            "node": "Detect CV Attachment Type1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent — Parse CV (Bias-Free)1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model4": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent — Explainability Engine1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model5": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent — Generate Interview Questions1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup JD from Google Sheets1": {
+      "main": [
+        [
+          {
+            "node": "Validate: Has Email + Attachment1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Worth Interviewing?": {
+      "main": [
+        [
+          {
+            "node": "AI Agent — Generate Interview Questions1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Unfit Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "239c1ed7-5d36-4a4a-8a61-9ff208b3ce36",
+  "meta": {
+    "instanceId": "e1192d852f6a38d336be2f732e2cd231545a7e06cb7c87128e32408b20ec4958"
+  },
+  "id": "3FeL4Fzhp5vPzvHL",
+  "tags": []
+}

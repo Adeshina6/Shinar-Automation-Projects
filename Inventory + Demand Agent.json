@@ -1,0 +1,570 @@
+{
+  "name": "Inventory + Demand Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * 1"
+            }
+          ]
+        }
+      },
+      "name": "Cron - Weekly Monday 6AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -736,
+        1040
+      ],
+      "id": "ddcf26b4-ef1f-4434-83d4-6e188246cbb6"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao",
+          "mode": "list",
+          "cachedResultName": "inventory_demand_agent_sheets",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 904458909,
+          "mode": "list",
+          "cachedResultName": "SalesHistory",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit#gid=904458909"
+        },
+        "options": {}
+      },
+      "name": "Fetch Sales History (Google Sheets)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -512,
+        1040
+      ],
+      "id": "9e8d990e-ac11-4d29-9a0b-3c126c42a7b3",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao",
+          "mode": "list",
+          "cachedResultName": "inventory_demand_agent_sheets",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 379624784,
+          "mode": "list",
+          "cachedResultName": "CurrentInventory",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit#gid=379624784"
+        },
+        "options": {}
+      },
+      "name": "Fetch Current Inventory",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -288,
+        1040
+      ],
+      "id": "636d5fa7-edcf-4733-aa69-8f8f089d32c7",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao",
+          "mode": "list",
+          "cachedResultName": "inventory_demand_agent_sheets",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1902209167,
+          "mode": "list",
+          "cachedResultName": "ProductCatalog",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit#gid=1902209167"
+        },
+        "options": {}
+      },
+      "name": "Fetch Product Catalog",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -96,
+        1040
+      ],
+      "id": "7d6b9782-c48b-46d3-bd91-c7a18051dbcd",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────\n// NODE 5: DATA NORMALIZATION\n// Merges sales, inventory, and catalog into one clean dataset per SKU\n// ─────────────────────────────────────────────────────────────────\n\nconst salesRaw     = $('Fetch Sales History (Google Sheets)').all();\nconst inventoryRaw = $('Fetch Current Inventory').all();\nconst catalogRaw   = $('Fetch Product Catalog').all();\n\n// Build lookup maps\nconst inventoryMap = {};\nfor (const row of inventoryRaw) {\n  const d = row.json;\n  inventoryMap[d.sku] = {\n    currentStock: parseFloat(d.current_stock) || 0\n  };\n}\n\nconst catalogMap = {};\nfor (const row of catalogRaw) {\n  const d = row.json;\n  catalogMap[d.sku] = {\n    name:         d.product_name || d.sku,\n    supplier:     d.supplier     || 'Unknown',\n    leadTimeDays: parseFloat(d.lead_time_days) || 7,\n    unitCost:     parseFloat(d.unit_cost)      || 0,\n    reorderUnit:  parseFloat(d.reorder_unit)   || 1\n  };\n}\n\n// Group sales by SKU — normalize date and units\nconst salesBySku = {};\nfor (const row of salesRaw) {\n  const d = row.json;\n  const sku = d.sku;\n  if (!sku) continue;\n\n  const saleDate = new Date(d.sale_date || d.date);\n  const qty      = parseFloat(d.quantity_sold || d.qty) || 0;\n  if (isNaN(saleDate.getTime()) || qty <= 0) continue;\n\n  if (!salesBySku[sku]) salesBySku[sku] = [];\n  salesBySku[sku].push({ date: saleDate, qty });\n}\n\n// Assemble normalized dataset\nconst result = [];\nfor (const sku of Object.keys(salesBySku)) {\n  const sales   = salesBySku[sku].sort((a, b) => a.date - b.date);\n  const inv     = inventoryMap[sku]  || { currentStock: 0 };\n  const catalog = catalogMap[sku]    || { name: sku, leadTimeDays: 7, unitCost: 0, supplier: 'Unknown', reorderUnit: 1 };\n\n  result.push({\n    json: {\n      sku,\n      productName:  catalog.name,\n      supplier:     catalog.supplier,\n      leadTimeDays: catalog.leadTimeDays,\n      unitCost:     catalog.unitCost,\n      reorderUnit:  catalog.reorderUnit,\n      currentStock: inv.currentStock,\n      salesHistory: sales.map(s => ({ date: s.date.toISOString().split('T')[0], qty: s.qty }))\n    }\n  });\n}\n\nreturn result;"
+      },
+      "name": "Normalize + Merge Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        1024
+      ],
+      "id": "47024f7e-5534-49c3-8b4c-4a955a171f95"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────\n// NODE 6: DEMAND ANALYSIS\n// Calculates average daily/weekly demand, moving averages,\n// trend direction, and classifies products as fast/slow movers\n// ─────────────────────────────────────────────────────────────────\n\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  const history = d.salesHistory || [];\n\n  if (history.length === 0) {\n    results.push({ json: { ...d, demandAnalysis: null, warning: 'No sales history' } });\n    continue;\n  }\n\n  // ── Total period span\n  const dates     = history.map(h => new Date(h.date));\n  const minDate   = new Date(Math.min(...dates));\n  const maxDate   = new Date(Math.max(...dates));\n  const spanDays  = Math.max(1, (maxDate - minDate) / (1000 * 60 * 60 * 24) + 1);\n  const totalQty  = history.reduce((s, h) => s + h.qty, 0);\n\n  // ── Average daily demand\n  const avgDailyDemand  = totalQty / spanDays;\n  const avgWeeklyDemand = avgDailyDemand * 7;\n\n  // ── Simple Moving Average (last 4 weeks = 28 days)\n  const now          = new Date();\n  const cutoff28     = new Date(now - 28 * 86400000);\n  const last28       = history.filter(h => new Date(h.date) >= cutoff28);\n  const sma28        = last28.length > 0\n    ? last28.reduce((s, h) => s + h.qty, 0) / 28\n    : avgDailyDemand;\n\n  // ── Weighted Moving Average (more weight on recent weeks)\n  // Weights: W1=0.5 (most recent 7d), W2=0.3 (8-14d), W3=0.2 (15-21d)\n  const w = [{ days: 7, w: 0.5 }, { days: 14, w: 0.3 }, { days: 21, w: 0.2 }];\n  let wmaSum = 0, wmaTotal = 0;\n  for (const band of w) {\n    const from   = new Date(now - band.days * 86400000);\n    const prev   = new Date(now - (band.days - 7) * 86400000);\n    const slice  = history.filter(h => {\n      const d = new Date(h.date);\n      return d >= from && d < prev;\n    });\n    const sliceQty = slice.reduce((s, h) => s + h.qty, 0);\n    wmaSum  += sliceQty * band.w;\n    wmaTotal += band.w;\n  }\n  const wmaDaily = wmaTotal > 0 ? wmaSum / wmaTotal / 7 : avgDailyDemand;\n\n  // ── Trend direction (compare first-half vs second-half avg)\n  const midIndex    = Math.floor(history.length / 2);\n  const firstHalf   = history.slice(0, midIndex);\n  const secondHalf  = history.slice(midIndex);\n  const firstAvg    = firstHalf.reduce((s, h)  => s + h.qty, 0) / Math.max(1, firstHalf.length);\n  const secondAvg   = secondHalf.reduce((s, h) => s + h.qty, 0) / Math.max(1, secondHalf.length);\n  const trendPct    = firstAvg > 0 ? ((secondAvg - firstAvg) / firstAvg) * 100 : 0;\n  const trendDir    = trendPct > 5 ? 'upward' : trendPct < -5 ? 'downward' : 'stable';\n\n  // ── Standard deviation (for safety stock)\n  const dailySales = history.map(h => h.qty);\n  const mean       = dailySales.reduce((s, v) => s + v, 0) / dailySales.length;\n  const variance   = dailySales.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / dailySales.length;\n  const stdDev     = Math.sqrt(variance);\n\n  // ── Fast mover classification (top 20% by avg daily demand)\n  const fastMoverThreshold = 5; // units/day — adjust per business\n  const isFastMover        = avgDailyDemand >= fastMoverThreshold;\n\n  results.push({\n    json: {\n      ...d,\n      demandAnalysis: {\n        avgDailyDemand:  Math.round(avgDailyDemand  * 100) / 100,\n        avgWeeklyDemand: Math.round(avgWeeklyDemand * 100) / 100,\n        smaDaily:        Math.round(sma28           * 100) / 100,\n        wmaDaily:        Math.round(wmaDaily         * 100) / 100,\n        trendDirection:  trendDir,\n        trendPercent:    Math.round(trendPct),\n        stdDev:          Math.round(stdDev * 100) / 100,\n        spanDays:        Math.round(spanDays),\n        isFastMover,\n        dataPoints:      history.length\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "name": "Demand Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        1024
+      ],
+      "id": "5448283a-e4ff-4d23-bde6-83767456f1ad"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────\n// NODE 7: DEMAND FORECASTING\n// Produces next-period demand forecast using WMA as primary model\n// with optional linear regression trend adjustment\n// ─────────────────────────────────────────────────────────────────\n\nconst FORECAST_DAYS   = 7;  // Forecast horizon (days)\nconst Z_SCORE         = 1.645; // 95% service level for safety stock\nconst BUFFER_MULTIPLIER = 1.2; // 20% buffer on top of forecast\n\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d  = item.json;\n  const da = d.demandAnalysis;\n\n  if (!da) {\n    results.push({ json: { ...d, forecast: null } });\n    continue;\n  }\n\n  // ── Primary forecast: Weighted Moving Average daily\n  const wmaForecast   = da.wmaDaily * FORECAST_DAYS;\n\n  // ── Secondary: Simple Moving Average\n  const smaForecast   = da.smaDaily * FORECAST_DAYS;\n\n  // ── Linear Regression Trend Adjustment\n  // Fit a line through weekly aggregated sales and project forward\n  const history = d.salesHistory || [];\n  let linearForecast = wmaForecast; // fallback\n\n  if (history.length >= 14) {\n    // Aggregate into weekly buckets\n    const weeklyMap = {};\n    for (const h of history) {\n      const weekNum = Math.floor(new Date(h.date).getTime() / (7 * 86400000));\n      weeklyMap[weekNum] = (weeklyMap[weekNum] || 0) + h.qty;\n    }\n    const weeks   = Object.keys(weeklyMap).sort();\n    const n       = weeks.length;\n    const xVals   = weeks.map((_, i) => i);\n    const yVals   = weeks.map(w => weeklyMap[w]);\n    const sumX    = xVals.reduce((s, v) => s + v, 0);\n    const sumY    = yVals.reduce((s, v) => s + v, 0);\n    const sumXY   = xVals.reduce((s, v, i) => s + v * yVals[i], 0);\n    const sumX2   = xVals.reduce((s, v) => s + v * v, 0);\n    const slope   = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX || 1);\n    const intercept = (sumY - slope * sumX) / n;\n    const projectedWeekly = Math.max(0, intercept + slope * n); // next week\n    linearForecast = projectedWeekly * (FORECAST_DAYS / 7);\n  }\n\n  // ── Ensemble: blend WMA (60%) + Linear (40%) for final forecast\n  const blendedForecast = 0.6 * wmaForecast + 0.4 * linearForecast;\n\n  // ── Safety stock: Z * stdDev * sqrt(leadTime)\n  const safetyStock = Math.ceil(\n    Z_SCORE * da.stdDev * Math.sqrt(d.leadTimeDays)\n  );\n\n  // ── Reorder Point\n  // ROP = (avg daily demand × lead time) + safety stock\n  const avgDaily = da.wmaDaily || da.avgDailyDemand;\n  const rop      = Math.ceil(avgDaily * d.leadTimeDays + safetyStock);\n\n  // ── Days of Inventory Remaining\n  const daysRemaining = avgDaily > 0\n    ? Math.floor(d.currentStock / avgDaily)\n    : 999;\n\n  // ── Recommended Order Quantity\n  // EOQ (simplified) = sqrt(2 * D * S / H)\n  // D = annual demand, S = order cost (assumed $50), H = holding cost (20% of unit cost)\n  const annualDemand = avgDaily * 365;\n  const orderCost    = 50;\n  const holdingCost  = Math.max(0.5, d.unitCost * 0.20);\n  const eoq          = Math.ceil(Math.sqrt(2 * annualDemand * orderCost / holdingCost));\n\n  // Simple rule fallback: forecast for next cycle + buffer\n  const simpleOrder  = Math.ceil(blendedForecast * BUFFER_MULTIPLIER);\n  const orderQty     = d.unitCost > 0 ? eoq : simpleOrder;\n\n  results.push({\n    json: {\n      ...d,\n      forecast: {\n        horizonDays:      FORECAST_DAYS,\n        wmaForecast:      Math.round(wmaForecast),\n        smaForecast:      Math.round(smaForecast),\n        linearForecast:   Math.round(linearForecast),\n        blendedForecast:  Math.round(blendedForecast),\n        safetyStock,\n        rop,\n        daysRemaining,\n        orderQty,\n        eoq\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "name": "Demand Forecasting + ROP Calculation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        1024
+      ],
+      "id": "ef3c47d9-82ec-452c-9d26-ecf7e636f079"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────\n// NODE 8: RESTOCK DECISION ENGINE\n// Determines if a restock alert should be triggered and assigns\n// urgency level: critical / medium / low / none\n// Also generates human-readable insight messages\n// ─────────────────────────────────────────────────────────────────\n\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d  = item.json;\n  const fc = d.forecast;\n  const da = d.demandAnalysis;\n\n  if (!fc || !da) {\n    results.push({ json: { ...d, decision: { alert: false, urgency: 'none', reason: 'Insufficient data' } } });\n    continue;\n  }\n\n  const { currentStock, sku, productName, leadTimeDays } = d;\n  const { rop, daysRemaining, blendedForecast, orderQty, safetyStock } = fc;\n\n  let urgency    = 'none';\n  let alert      = false;\n  let reason     = '';\n  let insights   = [];\n\n  // ── Rule 1: Stock at or below ROP\n  if (currentStock <= rop) {\n    alert = true;\n    if (currentStock <= safetyStock) {\n      urgency = 'critical';\n      reason  = `Stock (${currentStock}) is at or below safety stock (${safetyStock}). Stockout imminent.`;\n    } else {\n      urgency = 'medium';\n      reason  = `Stock (${currentStock}) has crossed reorder point (${rop}).`;\n    }\n  }\n\n  // ── Rule 2: Will stock out before next delivery arrives?\n  if (daysRemaining < leadTimeDays) {\n    alert   = true;\n    urgency = urgency === 'critical' ? 'critical' : 'critical';\n    reason += ` Predicted stockout in ${daysRemaining} day(s) — lead time is ${leadTimeDays} day(s).`;\n  }\n\n  // ── Rule 3: Low urgency — within 3x lead time of ROP\n  if (!alert && currentStock <= rop * 1.5) {\n    alert   = true;\n    urgency = 'low';\n    reason  = `Stock (${currentStock}) approaching reorder point (${rop}). Plan ahead.`;\n  }\n\n  // ── Insight messages\n  if (daysRemaining < leadTimeDays) {\n    insights.push(`⚠️ ${productName} will stock out in ${daysRemaining} day(s) — order NOW to cover lead time.`);\n  } else if (daysRemaining <= 14) {\n    insights.push(`📦 ${productName} has ~${daysRemaining} days of stock remaining.`);\n  }\n\n  if (da.trendDirection === 'upward') {\n    insights.push(`📈 Demand trending up ${da.trendPercent}% — consider increasing order qty.`);\n  } else if (da.trendDirection === 'downward') {\n    insights.push(`📉 Demand trending down ${Math.abs(da.trendPercent)}% — monitor for overstock risk.`);\n  }\n\n  // ── Overstock detection\n  const avgDaily   = da.wmaDaily || da.avgDailyDemand;\n  const coverDays  = avgDaily > 0 ? currentStock / avgDaily : 999;\n  if (coverDays > 90 && !alert) {\n    insights.push(`⚡ ${productName} is overstocked (${Math.round(coverDays)} days of supply). Reduce next order.`);\n  }\n\n  results.push({\n    json: {\n      ...d,\n      decision: {\n        alert,\n        urgency,\n        reason: reason.trim(),\n        insights,\n        coverDays: Math.round(coverDays)\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "name": "Restock Decision Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        1024
+      ],
+      "id": "98ab7c48-a757-4fe0-9a31-412d34d07991"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-alert",
+              "leftValue": "={{ $json.decision.alert }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1136,
+        1024
+      ],
+      "id": "5112dd93-6041-4564-b8af-224f8703123d"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────\n// NODE 10: DUPLICATE ALERT PREVENTION\n// Checks last alert timestamp. Skip if alert was sent < 24h ago.\n// In production: read from a database or Sheets log.\n// ─────────────────────────────────────────────────────────────────\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  // TODO: Replace with real DB lookup using $('Read Alert Log').item\n  const lastAlertSent = d.lastAlertSent ? new Date(d.lastAlertSent) : null;\n  const hoursSince = lastAlertSent\n    ? (Date.now() - lastAlertSent.getTime()) / 3600000\n    : 999;\n\n  if (hoursSince >= 24) {\n    results.push({ json: { ...d, _shouldSendAlert: true } });\n  }\n  // Items with recent alerts are silently dropped\n}\n\nreturn results;"
+      },
+      "name": "Dedup: Skip Recent Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        784
+      ],
+      "id": "c443d930-7284-4c83-9ee3-a1d2342b6b89"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────\n// NODE 11: FORMAT ALERT MESSAGE\n// Builds a rich, readable alert message for all channels\n// ─────────────────────────────────────────────────────────────────\nconst items = $input.all();\nconst results = [];\n\nconst URGENCY_EMOJI = { critical: '🔴', medium: '🟡', low: '🟢', none: '⚪' };\n\nfor (const item of items) {\n  const d   = item.json;\n  const fc  = d.forecast;\n  const da  = d.demandAnalysis;\n  const dec = d.decision;\n\n  const emoji    = URGENCY_EMOJI[dec.urgency] || '⚪';\n  const dateStr  = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });\n\n  const insightBlock = dec.insights.length\n    ? '\\n\\n*Insights:*\\n' + dec.insights.join('\\n')\n    : '';\n\n  const slackMsg = [\n    `${emoji} *RESTOCK ALERT — ${dec.urgency.toUpperCase()}*`,\n    `*Date:* ${dateStr}`,\n    `*SKU:* ${d.sku}  |  *Product:* ${d.productName}`,\n    `*Supplier:* ${d.supplier}  |  *Lead Time:* ${d.leadTimeDays} day(s)`,\n    `*Current Stock:* ${d.currentStock} units`,\n    `*Reorder Point (ROP):* ${fc.rop} units`,\n    `*Safety Stock:* ${fc.safetyStock} units`,\n    `*Days Remaining:* ${fc.daysRemaining} day(s)`,\n    `*Forecast (next ${fc.horizonDays}d):* ${fc.blendedForecast} units`,\n    `*Recommended Order Qty:* ${fc.orderQty} units`,\n    `*Reason:* ${dec.reason}`,\n    insightBlock\n  ].join('\\n');\n\n  const emailHtml = `\n<h2 style=\"color:#e53e3e\">${emoji} Restock Alert — ${dec.urgency.toUpperCase()}</h2>\n<p><strong>Date:</strong> ${dateStr}</p>\n<table cellpadding=\"6\" cellspacing=\"0\" border=\"1\" style=\"border-collapse:collapse;font-family:sans-serif;font-size:14px\">\n  <tr><td><strong>SKU</strong></td><td>${d.sku}</td><td><strong>Product</strong></td><td>${d.productName}</td></tr>\n  <tr><td><strong>Supplier</strong></td><td>${d.supplier}</td><td><strong>Lead Time</strong></td><td>${d.leadTimeDays} days</td></tr>\n  <tr style=\"background:#fff5f5\"><td><strong>Current Stock</strong></td><td>${d.currentStock}</td><td><strong>ROP</strong></td><td>${fc.rop}</td></tr>\n  <tr><td><strong>Safety Stock</strong></td><td>${fc.safetyStock}</td><td><strong>Days Remaining</strong></td><td>${fc.daysRemaining}</td></tr>\n  <tr style=\"background:#f0fff4\"><td><strong>Forecast (${fc.horizonDays}d)</strong></td><td>${fc.blendedForecast} units</td><td><strong>Order Qty</strong></td><td><strong>${fc.orderQty} units</strong></td></tr>\n</table>\n<p><em>${dec.reason}</em></p>\n${dec.insights.map(i => `<p>${i}</p>`).join('')}\n`;\n\n  const telegramMsg = `${emoji} *Restock Alert — ${dec.urgency.toUpperCase()}*\\n` +\n    `SKU: ${d.sku} | ${d.productName}\\n` +\n    `Stock: ${d.currentStock} | ROP: ${fc.rop}\\n` +\n    `Days left: ${fc.daysRemaining} | Order: *${fc.orderQty} units*\\n` +\n    `${dec.reason}`;\n\n  results.push({\n    json: {\n      ...d,\n      alerts: { slackMsg, emailHtml, telegramMsg }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "name": "Format Alert Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        784
+      ],
+      "id": "b84ed283-7c93-4d5d-abc2-d9b5f8d105e1"
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "text": "={{ $json.alerts.slackMsg }}",
+        "otherOptions": {}
+      },
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [
+        1808,
+        400
+      ],
+      "id": "43e4e128-56ea-4bac-95fe-ce8278668021",
+      "webhookId": "8e263a5f-ad5e-48fb-87be-5e05612ef449",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.alerts.telegramMsg }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        1808,
+        592
+      ],
+      "id": "6b44201e-6ffe-4780-8015-7b49ca16847b",
+      "webhookId": "fa59394d-9676-462f-b722-c236cc3acd84",
+      "credentials": {
+        "telegramApi": {
+          "id": "Yfr9njiaqT2B9jrI",
+          "name": "Telegram account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao",
+          "mode": "list",
+          "cachedResultName": "inventory_demand_agent_sheets",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 791910686,
+          "mode": "list",
+          "cachedResultName": "InventoryDashboard",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit#gid=791910686"
+        },
+        "options": {}
+      },
+      "name": "Update Dashboard (Google Sheets)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1808,
+        1216
+      ],
+      "id": "c015269b-df91-408d-a68a-efb5e0e8523f",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao",
+          "mode": "list",
+          "cachedResultName": "inventory_demand_agent_sheets",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1289648868,
+          "mode": "list",
+          "cachedResultName": "ForecastLog",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bAEAALgTpP8MvUxvEjnAPXOSr3TWOe2r0ky6WTdV8Ao/edit#gid=1289648868"
+        },
+        "options": {}
+      },
+      "name": "Append to Forecast Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1808,
+        1024
+      ],
+      "id": "c6ea9329-e335-4cda-a154-4100f6de0604",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xCo8yHIFhlfgol07",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────\n// NODE 17: LOG ALL (no-alert path)\n// Items that don't need an alert still get logged to ForecastLog\n// ─────────────────────────────────────────────────────────────────\nconst items = $input.all();\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    _loggedAt: new Date().toISOString()\n  }\n}));"
+      },
+      "name": "Log Non-Alert Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        1264
+      ],
+      "id": "7e89760e-81ce-4531-a790-f56f72cb7ed1"
+    },
+    {
+      "parameters": {
+        "sendTo": "adetunjimuhammed26@gmail.com",
+        "subject": "={{ '🔔 [' + $json.decision.urgency.toUpperCase() + '] Restock Alert: ' + $json.productName + ' (' + $json.sku + ')' }}",
+        "message": "=<!DOCTYPE html>\n<html>\n<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>\n<body style=\"margin:0;padding:0;background:#e8ecf0;font-family:Arial,sans-serif;\">\n\n<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#e8ecf0;padding:32px 0;\">\n<tr><td align=\"center\">\n<table width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #dde3ea;box-shadow:0 4px 24px rgba(0,0,0,0.08);\">\n\n  <!-- HEADER -->\n  <tr><td style=\"background:#1A3A5C;padding:22px 28px;\">\n    <table cellpadding=\"0\" cellspacing=\"0\"><tr>\n      <td style=\"width:38px;height:38px;background:#2E86AB;border-radius:8px;text-align:center;vertical-align:middle;\">\n        <span style=\"color:#fff;font-size:20px;line-height:38px;display:block;\">📦</span>\n      </td>\n      <td style=\"padding-left:12px;\">\n        <div style=\"color:#ffffff;font-size:15px;font-weight:700;letter-spacing:0.2px;\">Inventory Alert</div>\n        <div style=\"color:#7BB3CC;font-size:11px;margin-top:2px;\">Demand Prediction Agent · by Shinar</div>\n      </td>\n    </tr></table>\n  </td></tr>\n\n  <!-- URGENCY BADGE + DATE -->\n  <tr><td style=\"padding:20px 28px 0;\">\n    <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>\n      <td>\n        <!-- CRITICAL -->\n        <span style=\"display:inline-block;padding:5px 14px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.6px;background:#FCEBEB;color:#A32D2D;\">🔴 CRITICAL</span>\n        <!-- MEDIUM: background:#FAEEDA;color:#633806; -->\n        <!-- LOW:    background:#EAF3DE;color:#27500A; -->\n        <span style=\"font-size:12px;color:#6b7280;margin-left:8px;\">Restock action required</span>\n      </td>\n      <td align=\"right\" style=\"font-size:11px;color:#9ca3af;white-space:nowrap;\">{{ $now }}</td>\n    </tr></table>\n  </td></tr>\n\n  <!-- PRODUCT TITLE -->\n  <tr><td style=\"padding:14px 28px 0;\">\n    <div style=\"font-size:18px;font-weight:700;color:#111827;\">{{ $json.productName }}</div>\n    <div style=\"font-size:12px;color:#6b7280;margin-top:5px;\">\n      SKU: <span style=\"font-family:monospace;background:#f3f4f6;padding:1px 6px;border-radius:4px;color:#374151;font-size:12px;\">{{ $json.sku }}</span>\n      &nbsp;&nbsp;|&nbsp;&nbsp;\n      Supplier: <span style=\"color:#374151;font-weight:600;\">{{ $('Fetch Product Catalog').item.json.supplier }}</span>\n    </div>\n  </td></tr>\n\n  <!-- METRIC CARDS -->\n  <tr><td style=\"padding:16px 28px 0;\">\n    <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>\n\n      <!-- Current Stock — red if at/below safety stock, neutral otherwise -->\n      <td width=\"33%\" style=\"padding-right:6px;\">\n        <div style=\"background:{{ stockBg }};border:1px solid {{ stockBorder }};border-radius:10px;padding:14px 16px;\">\n          <div style=\"font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;\">Current Stock</div>\n          <div style=\"font-size:28px;font-weight:800;color:{{ stockColor }};line-height:1;\">{{ $('Demand Forecasting + ROP Calculation').item.json.currentStock }}</div>\n          <div style=\"font-size:10px;color:#9ca3af;margin-top:4px;\">units on hand</div>\n        </div>\n      </td>\n\n      <!-- Reorder Point — always neutral -->\n      <td width=\"33%\" style=\"padding:0 3px;\">\n        <div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;\">\n          <div style=\"font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;\">Reorder Point</div>\n          <div style=\"font-size:28px;font-weight:800;color:#111827;line-height:1;\">{{ $json.forecast.rop }}</div>\n          <div style=\"font-size:10px;color:#9ca3af;margin-top:4px;\">ROP threshold</div>\n        </div>\n      </td>\n\n      <!-- Days Remaining — red if below lead time -->\n      <td width=\"33%\" style=\"padding-left:6px;\">\n        <div style=\"background:{{ daysBg }};border:1px solid {{ daysBorder }};border-radius:10px;padding:14px 16px;\">\n          <div style=\"font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;\">Days Remaining</div>\n          <div style=\"font-size:28px;font-weight:800;color:{{ daysColor }};line-height:1;\">{{ $json.forecast.daysRemaining }}</div>\n          <div style=\"font-size:10px;color:#9ca3af;margin-top:4px;\">at current rate</div>\n        </div>\n      </td>\n\n    </tr></table>\n  </td></tr>\n\n  <!-- DIVIDER -->\n  <tr><td style=\"padding:20px 28px 0;\"><div style=\"border-top:1px solid #f1f5f9;\"></div></td></tr>\n\n  <!-- DATA TABLE -->\n  <tr><td style=\"padding:0 28px;\">\n    <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:13px;\">\n      <tr>\n        <td style=\"padding:11px 0;color:#6b7280;border-bottom:1px solid #f1f5f9;\">Forecast demand (next {{ $json.forecast.horizonDays }} days)</td>\n        <td style=\"padding:11px 0;text-align:right;font-weight:600;color:#111827;border-bottom:1px solid #f1f5f9;\">{{ $json.forecast.blendedForecast }} units</td>\n      </tr>\n      <tr>\n        <td style=\"padding:11px 0;color:#6b7280;border-bottom:1px solid #f1f5f9;\">Safety stock</td>\n        <td style=\"padding:11px 0;text-align:right;font-weight:600;color:#111827;border-bottom:1px solid #f1f5f9;\">{{ $json.forecast.safetyStock }} units</td>\n      </tr>\n      <tr>\n        <td style=\"padding:11px 0;color:#6b7280;border-bottom:1px solid #f1f5f9;\">Supplier lead time</td>\n        <td style=\"padding:11px 0;text-align:right;font-weight:600;color:#111827;border-bottom:1px solid #f1f5f9;\">{{ $json.leadTimeDays }} days</td>\n      </tr>\n      <tr>\n        <td style=\"padding:11px 0;color:#6b7280;border-bottom:1px solid #f1f5f9;\">Trend direction</td>\n        <td style=\"padding:11px 0;text-align:right;border-bottom:1px solid #f1f5f9;\">{{ $json.demandAnalysis.trendDirection }}</td>\n      </tr>\n      <tr>\n        <td style=\"padding:14px 0 10px;color:#374151;font-weight:700;font-size:13px;\">Recommended order qty</td>\n        <td style=\"padding:14px 0 10px;text-align:right;font-weight:800;font-size:20px;color:#1A3A5C;\">{{ $json.forecast.orderQty }} units</td>\n      </tr>\n    </table>\n  </td></tr>\n\n  <!-- ALERT REASON -->\n  <tr><td style=\"padding:4px 28px 0;\">\n    <div style=\"background:{{ urg.bg }};border-left:3px solid {{ urg.border }};border-radius:0 6px 6px 0;padding:12px 16px;\">\n      <div style=\"font-size:10px;font-weight:700;color:{{ urg.badge }};text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px;\">Alert Reason</div>\n      <div style=\"font-size:13px;color:{{ urg.text }};line-height:1.6;\">{{ $json.decision.reason }}</div>\n    </div>\n  </td></tr>\n\n  <!-- INSIGHTS -->\n  <tr><td style=\"padding:12px 28px 0;\">\n    <div style=\"background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;\">\n      <div style=\"font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;\">Insights</div>\n      {{ $json.decision.insights }}\n    </div>\n  </td></tr>\n\n  <!-- FOOTER -->\n  <tr><td style=\"padding:20px 28px;\">\n    <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n      <tr>\n        <td style=\"border-top:1px solid #f1f5f9;padding-top:16px;font-size:11px;color:#9ca3af;\">Generated by Inventory Demand Agent &middot; n8n</td>\n        <td align=\"right\" style=\"border-top:1px solid #f1f5f9;padding-top:16px;font-size:11px;color:#9ca3af;\">Do not reply to this email</td>\n      </tr>\n    </table>\n  </td></tr>\n\n</table>\n</td></tr>\n</table>\n\n</body>\n</html>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1808,
+        784
+      ],
+      "id": "d6919bb6-6492-4c63-9874-bf23c57de142",
+      "name": "Send a message",
+      "webhookId": "226b0fc7-3761-47c5-8cd9-31a4e8056a31",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Qc3NUOKHPPpwr3AY",
+          "name": "Gmail account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cron - Weekly Monday 6AM": {
+      "main": [
+        [
+          {
+            "node": "Fetch Sales History (Google Sheets)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Sales History (Google Sheets)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Current Inventory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Current Inventory": {
+      "main": [
+        [
+          {
+            "node": "Fetch Product Catalog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Product Catalog": {
+      "main": [
+        [
+          {
+            "node": "Normalize + Merge Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize + Merge Data": {
+      "main": [
+        [
+          {
+            "node": "Demand Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Demand Analysis": {
+      "main": [
+        [
+          {
+            "node": "Demand Forecasting + ROP Calculation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Demand Forecasting + ROP Calculation": {
+      "main": [
+        [
+          {
+            "node": "Restock Decision Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restock Decision Engine": {
+      "main": [
+        [
+          {
+            "node": "Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "Dedup: Skip Recent Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Non-Alert Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup: Skip Recent Alerts": {
+      "main": [
+        [
+          {
+            "node": "Format Alert Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert Messages": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Dashboard (Google Sheets)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append to Forecast Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Non-Alert Items": {
+      "main": [
+        [
+          {
+            "node": "Update Dashboard (Google Sheets)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append to Forecast Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "Africa/Lagos",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "70b1f438-4acc-4c08-a4cd-4c95b07eb526",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e1192d852f6a38d336be2f732e2cd231545a7e06cb7c87128e32408b20ec4958"
+  },
+  "id": "D4CrEeQw5NaSsdQO",
+  "tags": [
+    {
+      "name": "Portfolio",
+      "id": "5iC9D0GJGyxMJ5I9",
+      "updatedAt": "2026-05-06T18:35:39.818Z",
+      "createdAt": "2026-05-06T18:35:39.818Z"
+    }
+  ]
+}
