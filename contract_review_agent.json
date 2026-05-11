@@ -1,0 +1,315 @@
+{
+  "name": "Contract Review Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "triggerOn": "specificFolder",
+        "folderToWatch": { "__rl": true, "mode": "list", "value": "root" },
+        "event": "fileCreated",
+        "simple": true
+      },
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [-1600, 0],
+      "id": "node-trigger",
+      "name": "Google Drive Trigger",
+      "credentials": { "googleDriveOAuth2Api": { "id": "google-drive-creds", "name": "Google Drive" } }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": { "__rl": true, "mode": "id", "value": "={{ $json.id }}" },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [-1360, 0],
+      "id": "node-download",
+      "name": "Download File",
+      "credentials": { "googleDriveOAuth2Api": { "id": "google-drive-creds", "name": "Google Drive" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// VALIDATE & FINGERPRINT\n// Pure-JS hash (no require('crypto') — banned in n8n sandbox)\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\nconst fileName   = item.json.name || item.json.fileName || 'unknown';\nconst mimeType   = item.json.mimeType || '';\nconst fileSize   = item.json.size || 0;\nconst driveFileId = item.json.id || '';\n\n// Determine file type from mime or extension\nlet fileType = 'unknown';\nif (mimeType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf')) fileType = 'pdf';\nelse if (mimeType.includes('word') || mimeType.includes('openxmlformats') ||\n         fileName.toLowerCase().endsWith('.docx') || fileName.toLowerCase().endsWith('.doc')) fileType = 'docx';\n\n// Reject unsupported types\nif (fileType === 'unknown') {\n  throw new Error(`Unsupported file type: ${mimeType} (${fileName})`);\n}\n\n// Pure-JS fingerprint — djb2 hash on filename+size+timestamp\nfunction djb2(str) {\n  let hash = 5381;\n  for (let i = 0; i < str.length; i++) {\n    hash = ((hash << 5) + hash) + str.charCodeAt(i);\n    hash = hash & hash; // 32-bit\n  }\n  return Math.abs(hash).toString(16).padStart(8, '0');\n}\nconst fileHash = djb2(`${fileName}-${fileSize}-${Date.now()}`);\nconst sessionId = `contract-${fileHash}-${Date.now()}`;\n\nreturn [{\n  json: {\n    ...item.json,\n    sessionId,\n    fileName,\n    fileType,\n    fileHash,\n    mimeType,\n    fileSize,\n    driveFileId,\n    uploadedAt: new Date().toISOString()\n  },\n  binary: item.binary\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1120, 0],
+      "id": "node-validate",
+      "name": "Validate & Fingerprint"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.fileType }}", "rightValue": "pdf", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "PDF" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.fileType }}", "rightValue": "docx", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "DOCX" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-880, 0],
+      "id": "node-route",
+      "name": "Route by File Type"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-640, -120],
+      "id": "node-extract-pdf",
+      "name": "Extract PDF Text"
+    },
+    {
+      "parameters": {
+        "operation": "docx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-640, 120],
+      "id": "node-extract-docx",
+      "name": "Extract DOCX Text"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// MERGE EXTRACTED TEXT\n// Both PDF and DOCX branches land here — normalise to documentText\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\n// n8n Extract From File node puts text in item.json.text\nconst documentText = item.json.text || item.json.content || item.json.data || '';\n\nif (!documentText || documentText.trim().length === 0) {\n  throw new Error('Document text extraction failed — empty result.');\n}\n\nreturn [{\n  json: {\n    ...item.json,\n    documentText: documentText.trim()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-380, 0],
+      "id": "node-merge-text",
+      "name": "Merge Extracted Text"
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are a contract classification expert.\n\nAnalyse the following contract text and classify it.\n\nReturn ONLY a valid JSON object with NO markdown, NO explanation, NO code fences. Just raw JSON.\n\nRequired format:\n{\n  \"contractType\": \"NDA | Employment | Service Agreement | Lease | Partnership | Other\",\n  \"confidence\": 0.95,\n  \"reasoning\": \"Brief explanation of why you chose this type\"\n}\n\nCONTRACT TEXT:\n{{ $json.documentText }}",
+        "options": { "systemMessage": "You are a precise contract classification AI. Always return valid JSON only. Never add markdown formatting, backticks, or explanation text outside the JSON object." }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [-100, 0],
+      "id": "node-classify",
+      "name": "AI Agent: Classify Contract"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// PARSE CLASSIFICATION RESULT\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\nlet raw = item.json.output || '';\n\n// Strip markdown code fences if model added them\nraw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  throw new Error(`Classification parse failed: ${e.message}\\nRaw: ${raw.substring(0, 200)}`);\n}\n\nreturn [{\n  json: {\n    ...item.json,\n    contractType: parsed.contractType || 'Unknown',\n    confidence:   parsed.confidence   || 0,\n    reasoning:    parsed.reasoning    || ''\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 0],
+      "id": "node-parse-classify",
+      "name": "Parse Classification Result"
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are a contract clause extraction expert.\n\nExtract the key clauses from the contract below.\n\nReturn ONLY a valid JSON object. No markdown, no code fences, no extra text.\n\nRequired format:\n{\n  \"parties\": {\n    \"party_1\": \"Full name of first party\",\n    \"party_2\": \"Full name of second party\"\n  },\n  \"effective_date\": \"Date string or null\",\n  \"termination_clause\": {\n    \"exists\": true,\n    \"summary\": \"How and when either party can terminate\"\n  },\n  \"confidentiality_clause\": {\n    \"exists\": true,\n    \"summary\": \"What must be kept confidential and for how long\"\n  },\n  \"payment_clause\": {\n    \"exists\": false,\n    \"summary\": null\n  },\n  \"liability_clause\": {\n    \"exists\": true,\n    \"summary\": \"Liability limitations or exposure details\"\n  },\n  \"dispute_resolution\": {\n    \"exists\": true,\n    \"summary\": \"How disputes are resolved\"\n  },\n  \"governing_law\": {\n    \"exists\": true,\n    \"summary\": \"Which jurisdiction governs\"\n  }\n}\n\nCONTRACT TEXT:\n{{ $json.documentText }}",
+        "options": { "systemMessage": "You are a precise contract clause extraction AI. Always return valid JSON only. Never add markdown, backticks, or text outside the JSON object." }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [420, 0],
+      "id": "node-extract-clauses",
+      "name": "AI Agent: Extract Clauses"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// PARSE: EXTRACTED CLAUSES\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\nlet raw = item.json.output || '';\nraw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  throw new Error(`Clause parse failed: ${e.message}\\nRaw: ${raw.substring(0, 200)}`);\n}\n\nreturn [{\n  json: {\n    ...item.json,\n    extractedClauses: {\n      parties:               parsed.parties               || { party_1: null, party_2: null },\n      effective_date:        parsed.effective_date        || null,\n      termination_clause:    parsed.termination_clause    || { exists: false, summary: null },\n      confidentiality_clause:parsed.confidentiality_clause|| { exists: false, summary: null },\n      payment_clause:        parsed.payment_clause        || { exists: false, summary: null },\n      liability_clause:      parsed.liability_clause      || { exists: false, summary: null },\n      dispute_resolution:    parsed.dispute_resolution    || { exists: false, summary: null },\n      governing_law:         parsed.governing_law         || { exists: false, summary: null }\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 0],
+      "id": "node-parse-clauses",
+      "name": "Parse: Extracted Clauses"
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are a contract risk analysis expert.\n\nAnalyse the contract below and identify ALL risks.\n\nReturn ONLY a valid JSON object. No markdown, no code fences, no extra text.\n\nRequired format:\n{\n  \"overallRiskLevel\": \"LOW | MEDIUM | HIGH | CRITICAL\",\n  \"risks\": [\n    {\n      \"clause\": \"Name of the clause or issue\",\n      \"severity\": \"CRITICAL | HIGH | MEDIUM | LOW\",\n      \"description\": \"What the risk is\",\n      \"clause_reference\": \"Exact clause number or section if available\"\n    }\n  ],\n  \"summary\": \"One paragraph overall risk assessment\"\n}\n\nCONTRACT TEXT:\n{{ $json.documentText }}",
+        "options": { "systemMessage": "You are a precise contract risk analysis AI. Always return valid JSON only. Never add markdown, backticks, or text outside the JSON object." }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [940, 0],
+      "id": "node-detect-risks",
+      "name": "AI Agent: Detect Risks"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// PARSE: DETECT RISKS\n// Read ONLY from item.json.output to avoid stale/wrong data\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\nlet raw = item.json.output || '';\nraw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  throw new Error(`Risk parse failed: ${e.message}\\nRaw: ${raw.substring(0, 200)}`);\n}\n\nreturn [{\n  json: {\n    ...item.json,\n    riskAnalysis: {\n      overallRiskLevel: parsed.overallRiskLevel || 'UNKNOWN',\n      risks:            Array.isArray(parsed.risks) ? parsed.risks : [],\n      summary:          parsed.summary || ''\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 0],
+      "id": "node-parse-risks",
+      "name": "Parse: Detect Risks"
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are a contract protection analysis expert.\n\nReview the contract below and identify ALL missing protections that should be present but are not.\n\nReturn ONLY a valid JSON object. No markdown, no code fences, no extra text.\n\nRequired format:\n{\n  \"missingProtections\": [\n    {\n      \"protection\": \"Name of missing protection\",\n      \"whyItMatters\": \"Plain explanation of why this is important\",\n      \"importance\": \"ESSENTIAL | RECOMMENDED | OPTIONAL\"\n    }\n  ],\n  \"negotiationPriority\": \"Start with [most important item] because [reason]\"\n}\n\nCONTRACT TEXT:\n{{ $json.documentText }}",
+        "options": { "systemMessage": "You are a precise contract protection analysis AI. Always return valid JSON only. Never add markdown, backticks, or text outside the JSON object." }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [1460, 0],
+      "id": "node-missing-protections",
+      "name": "AI Agent: Missing Protections"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// PARSE: MISSING PROTECTIONS\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\nlet raw = item.json.output || '';\nraw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  throw new Error(`Missing protections parse failed: ${e.message}\\nRaw: ${raw.substring(0, 200)}`);\n}\n\nreturn [{\n  json: {\n    ...item.json,\n    missingProtections:  Array.isArray(parsed.missingProtections) ? parsed.missingProtections : [],\n    negotiationPriority: parsed.negotiationPriority || ''\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1720, 0],
+      "id": "node-parse-missing",
+      "name": "Parse: Missing Protections"
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "=You are a plain-English contract translation expert. Your job is to make contracts understandable to non-lawyers.\n\nAnalyse the contract text and risk data below, then produce your output.\n\nReturn ONLY a valid JSON object. No markdown, no code fences, no extra text.\n\nRequired format:\n{\n  \"plainEnglishSummary\": \"2-3 sentence plain English overview of what this contract actually means for the person signing it\",\n  \"shouldSign\": \"SIGN | NEGOTIATE FIRST | DO NOT SIGN\",\n  \"topThreeActions\": [\n    \"First most important action to take\",\n    \"Second most important action to take\",\n    \"Third most important action to take\"\n  ],\n  \"riskBreakdown\": [\n    {\n      \"clause\": \"Clause or issue name\",\n      \"plainEnglish\": \"What this risk means in plain English\",\n      \"severity\": \"CRITICAL | HIGH | MEDIUM | LOW\",\n      \"whatToDoAboutIt\": \"Concrete action to take\"\n    }\n  ],\n  \"missingProtectionsPlain\": [\n    {\n      \"protection\": \"Name of missing protection\",\n      \"whyItMatters\": \"Why this matters in plain English\",\n      \"importance\": \"ESSENTIAL | RECOMMENDED | OPTIONAL\"\n    }\n  ],\n  \"bottomLine\": \"One punchy sentence summarising whether to sign or not\"\n}\n\nCONTRACT TEXT:\n{{ $json.documentText }}\n\nIDENTIFIED RISKS:\n{{ JSON.stringify($json.riskAnalysis) }}\n\nMISSING PROTECTIONS:\n{{ JSON.stringify($json.missingProtections) }}",
+        "options": { "systemMessage": "You are a plain-English contract translation AI. Write for a non-lawyer audience. Be direct, clear, and honest about risks. Always return valid JSON only — no markdown, no backticks, no text outside the JSON object." }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [1980, 0],
+      "id": "node-plain-english",
+      "name": "AI Agent: Plain English Translation"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// PARSE: PLAIN ENGLISH\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\nlet raw = item.json.output || '';\nraw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  throw new Error(`Plain English parse failed: ${e.message}\\nRaw: ${raw.substring(0, 200)}`);\n}\n\nreturn [{\n  json: {\n    ...item.json,\n    plainEnglishSummary:    parsed.plainEnglishSummary    || '',\n    shouldSign:             parsed.shouldSign             || 'NEGOTIATE FIRST',\n    topThreeActions:        Array.isArray(parsed.topThreeActions) ? parsed.topThreeActions : [],\n    riskBreakdown:          Array.isArray(parsed.riskBreakdown)   ? parsed.riskBreakdown   : [],\n    missingProtectionsPlain:Array.isArray(parsed.missingProtectionsPlain) ? parsed.missingProtectionsPlain : [],\n    bottomLine:             parsed.bottomLine             || ''\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2240, 0],
+      "id": "node-parse-plain",
+      "name": "Parse: Plain English"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// CALCULATE SAFETY SCORE\n// Reads from riskBreakdown[] and missingProtectionsPlain[]\n// which are the confirmed-present fields from Parse: Plain English\n// ─────────────────────────────────────────────────────────────\nconst item = items[0];\n\nconst riskBreakdown          = item.json.riskBreakdown          || [];\nconst missingProtectionsPlain = item.json.missingProtectionsPlain || [];\n\n// Count severities from riskBreakdown\nconst severityCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };\nfor (const risk of riskBreakdown) {\n  const sev = (risk.severity || '').toUpperCase();\n  if (sev in severityCounts) severityCounts[sev]++;\n}\n\n// Count missing protections by importance\nlet essentialMissing   = 0;\nlet recommendedMissing = 0;\nlet optionalMissing    = 0;\nfor (const m of missingProtectionsPlain) {\n  const imp = (m.importance || '').toUpperCase();\n  if      (imp === 'ESSENTIAL')    essentialMissing++;\n  else if (imp === 'RECOMMENDED')  recommendedMissing++;\n  else if (imp === 'OPTIONAL')     optionalMissing++;\n}\n\n// Deductions\nconst riskDeductions =\n  severityCounts.CRITICAL * 40 +\n  severityCounts.HIGH     * 20 +\n  severityCounts.MEDIUM   * 10 +\n  severityCounts.LOW      *  5;\n\nconst missingDeductions =\n  essentialMissing   * 20 +\n  recommendedMissing * 10 +\n  optionalMissing    *  3;\n\n// Final score clamped 0–100\nconst safetyScore = Math.max(0, Math.min(100, 100 - riskDeductions - missingDeductions));\n\n// Grade\nlet grade, scoreLabel;\nif      (safetyScore >= 80) { grade = 'A'; scoreLabel = 'LOW RISK';      }\nelse if (safetyScore >= 65) { grade = 'B'; scoreLabel = 'MODERATE RISK'; }\nelse if (safetyScore >= 50) { grade = 'C'; scoreLabel = 'ELEVATED RISK'; }\nelse if (safetyScore >= 35) { grade = 'D'; scoreLabel = 'HIGH RISK';     }\nelse                        { grade = 'F'; scoreLabel = 'CRITICAL RISK'; }\n\nreturn [{\n  json: {\n    // carry all upstream fields\n    sessionId:              item.json.sessionId,\n    fileName:               item.json.fileName,\n    fileType:               item.json.fileType,\n    fileHash:               item.json.fileHash,\n    uploadedAt:             item.json.uploadedAt,\n    driveFileId:            item.json.driveFileId,\n    documentText:           item.json.documentText,\n    contractType:           item.json.contractType,\n    confidence:             item.json.confidence,\n    reasoning:              item.json.reasoning,\n    extractedClauses:       item.json.extractedClauses,\n    riskAnalysis:           item.json.riskAnalysis,\n    missingProtections:     item.json.missingProtections,\n    negotiationPriority:    item.json.negotiationPriority,\n    plainEnglishSummary:    item.json.plainEnglishSummary,\n    shouldSign:             item.json.shouldSign,\n    topThreeActions:        item.json.topThreeActions,\n    riskBreakdown,\n    missingProtectionsPlain,\n    bottomLine:             item.json.bottomLine,\n    // score fields\n    safetyScore,\n    grade,\n    scoreLabel,\n    riskDeductions,\n    missingDeductions,\n    severityCounts,\n    essentialMissing,\n    recommendedMissing,\n    optionalMissing\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2500, 0],
+      "id": "node-score",
+      "name": "Calculate Safety Score"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// ASSEMBLE FINAL REPORT — HTML EMAIL VERSION\n// ─────────────────────────────────────────────────────────────\nconst item = $input.first();\nconst d = item.json;\n\nconst {\n  sessionId, fileName, fileType, fileHash, uploadedAt, driveFileId,\n  contractType, confidence,\n  extractedClauses = {},\n  riskBreakdown = [],\n  missingProtectionsPlain = [],\n  plainEnglishSummary, shouldSign, topThreeActions = [], bottomLine,\n  safetyScore, grade, scoreLabel,\n  riskDeductions, missingDeductions,\n  severityCounts = {},\n  essentialMissing, recommendedMissing, optionalMissing,\n} = d;\n\n// ── Structured output ──────────────────────────────────────\nconst summary = {\n  session_id: sessionId, file_name: fileName,\n  file_type: (fileType || 'UNKNOWN').toUpperCase(),\n  file_hash: fileHash, drive_file_id: driveFileId,\n  analyzed_at: new Date().toISOString(), uploaded_at: uploadedAt,\n  contract_type: contractType, classification_confidence: confidence,\n  safety_score: safetyScore, grade, score_label: scoreLabel,\n  should_sign: shouldSign, bottom_line: bottomLine,\n};\n\nconst structuredOutput = {\n  summary,\n  key_clauses: extractedClauses,\n  risks: riskBreakdown,\n  missing_protections: missingProtectionsPlain,\n  plain_english: { summary: plainEnglishSummary, shouldSign, topThreeActions, bottomLine },\n  safety_score: { score: safetyScore, grade, scoreLabel, riskDeductions, missingDeductions, severityCounts, essentialMissing, recommendedMissing, optionalMissing }\n};\n\n// ── Colour helpers ─────────────────────────────────────────\nfunction gradeColor(g) {\n  return { A: '#16a34a', B: '#65a30d', C: '#d97706', D: '#ea580c', F: '#dc2626' }[g] || '#6b7280';\n}\nfunction severityColor(s) {\n  return { CRITICAL: '#dc2626', HIGH: '#ea580c', MEDIUM: '#d97706', LOW: '#16a34a' }[(s||'').toUpperCase()] || '#6b7280';\n}\nfunction importanceColor(i) {\n  return { ESSENTIAL: '#dc2626', RECOMMENDED: '#d97706', OPTIONAL: '#6b7280' }[(i||'').toUpperCase()] || '#6b7280';\n}\nfunction signColor(s) {\n  if (!s) return '#6b7280';\n  if (s.includes('NEGOTIATE')) return '#d97706';\n  if (s.includes('DO NOT') || s.includes('REFUSE')) return '#dc2626';\n  return '#16a34a';\n}\n\n// ── Score ring (SVG) ──────────────────────────────────────\nconst radius = 54;\nconst circ = 2 * Math.PI * radius;\nconst filled = circ * (safetyScore / 100);\nconst gap = circ - filled;\nconst scoreRing = `\n<svg width=\"140\" height=\"140\" viewBox=\"0 0 140 140\" xmlns=\"http://www.w3.org/2000/svg\">\n  <circle cx=\"70\" cy=\"70\" r=\"${radius}\" fill=\"none\" stroke=\"#e5e7eb\" stroke-width=\"10\"/>\n  <circle cx=\"70\" cy=\"70\" r=\"${radius}\" fill=\"none\"\n    stroke=\"${gradeColor(grade)}\" stroke-width=\"10\"\n    stroke-dasharray=\"${filled} ${gap}\"\n    stroke-dashoffset=\"${circ * 0.25}\"\n    stroke-linecap=\"round\"/>\n  <text x=\"70\" y=\"62\" text-anchor=\"middle\" font-family=\"Georgia,serif\"\n    font-size=\"28\" font-weight=\"700\" fill=\"${gradeColor(grade)}\">${safetyScore}</text>\n  <text x=\"70\" y=\"80\" text-anchor=\"middle\" font-family=\"Georgia,serif\"\n    font-size=\"13\" fill=\"#6b7280\">/100</text>\n  <text x=\"70\" y=\"100\" text-anchor=\"middle\" font-family=\"Georgia,serif\"\n    font-size=\"16\" font-weight=\"700\" fill=\"${gradeColor(grade)}\">${grade}</text>\n</svg>`;\n\n// ── Key Clauses rows ───────────────────────────────────────\nconst clauseRows = Object.entries(extractedClauses).map(([key, val]) => {\n  const label = key.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());\n  let display = 'Not specified';\n  if (val !== null && val !== undefined) {\n    if (typeof val === 'object') {\n      if (val.exists === false) display = '<span style=\"color:#9ca3af;font-style:italic;\">Not found in contract</span>';\n      else display = val.summary || val.details || val.schedule || val.method || JSON.stringify(val);\n    } else display = val;\n  }\n  return `\n  <tr>\n    <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:13px;color:#6b7280;\n               border-bottom:1px solid #f3f4f6;white-space:nowrap;vertical-align:top;\n               font-weight:600;\">${label}</td>\n    <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:13px;color:#1f2937;\n               border-bottom:1px solid #f3f4f6;\">${display}</td>\n  </tr>`;\n}).join('');\n\n// ── Risk cards ─────────────────────────────────────────────\nconst riskCards = riskBreakdown.length > 0\n  ? riskBreakdown.map(r => {\n      const sev = (r.severity || 'UNKNOWN').toUpperCase();\n      const col = severityColor(sev);\n      return `\n  <div style=\"margin-bottom:14px;border:1px solid #e5e7eb;border-left:4px solid ${col};\n              border-radius:6px;padding:14px 16px;background:#fff;\">\n    <div style=\"display:flex;align-items:center;gap:10px;margin-bottom:6px;\">\n      <span style=\"background:${col};color:#fff;font-family:Georgia,serif;font-size:11px;\n                   font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:.5px;\">${sev}</span>\n      <span style=\"font-family:Georgia,serif;font-size:14px;font-weight:700;color:#111827;\">${r.clause || ''}</span>\n    </div>\n    <p style=\"margin:0 0 8px;font-family:Georgia,serif;font-size:13px;color:#374151;line-height:1.6;\">${r.plainEnglish || ''}</p>\n    <div style=\"background:#f9fafb;border-radius:4px;padding:8px 12px;\">\n      <span style=\"font-family:Georgia,serif;font-size:12px;font-weight:700;color:#6b7280;\n                   text-transform:uppercase;letter-spacing:.5px;\">What to do: </span>\n      <span style=\"font-family:Georgia,serif;font-size:12px;color:#374151;\">${r.whatToDoAboutIt || ''}</span>\n    </div>\n  </div>`;\n    }).join('')\n  : `<p style=\"font-family:Georgia,serif;font-size:14px;color:#16a34a;font-style:italic;\">No significant risks detected.</p>`;\n\n// ── Missing protection cards ───────────────────────────────\nconst missingCards = missingProtectionsPlain.length > 0\n  ? missingProtectionsPlain.map(m => {\n      const imp = (m.importance || 'UNKNOWN').toUpperCase();\n      const col = importanceColor(imp);\n      return `\n  <div style=\"margin-bottom:12px;border:1px solid #e5e7eb;border-left:4px solid ${col};\n              border-radius:6px;padding:12px 16px;background:#fff;\">\n    <div style=\"display:flex;align-items:center;gap:10px;margin-bottom:5px;\">\n      <span style=\"background:${col};color:#fff;font-family:Georgia,serif;font-size:11px;\n                   font-weight:700;padding:2px 8px;border-radius:4px;\">${imp}</span>\n      <span style=\"font-family:Georgia,serif;font-size:13px;font-weight:700;color:#111827;\">${m.protection || ''}</span>\n    </div>\n    <p style=\"margin:0;font-family:Georgia,serif;font-size:13px;color:#374151;line-height:1.6;\">${m.whyItMatters || ''}</p>\n  </div>`;\n    }).join('')\n  : `<p style=\"font-family:Georgia,serif;font-size:14px;color:#16a34a;font-style:italic;\">All key protections are present.</p>`;\n\n// ── Top 3 Actions ──────────────────────────────────────────\nconst actionItems = topThreeActions.map((a, i) => `\n  <div style=\"display:flex;gap:14px;margin-bottom:12px;align-items:flex-start;\">\n    <div style=\"min-width:28px;height:28px;background:#111827;color:#fff;border-radius:50%;\n                display:flex;align-items:center;justify-content:center;\n                font-family:Georgia,serif;font-size:13px;font-weight:700;flex-shrink:0;\n                line-height:28px;text-align:center;\">${i + 1}</div>\n    <p style=\"margin:0;font-family:Georgia,serif;font-size:13px;color:#374151;line-height:1.7;\n              padding-top:4px;\">${a}</p>\n  </div>`).join('');\n\n// ── Score deduction rows ───────────────────────────────────\nconst deductionRows = [\n  [severityCounts.CRITICAL, 'CRITICAL risks', 40, '#dc2626'],\n  [severityCounts.HIGH,     'HIGH risks',     20, '#ea580c'],\n  [severityCounts.MEDIUM,   'MEDIUM risks',   10, '#d97706'],\n  [severityCounts.LOW,      'LOW risks',       5, '#16a34a'],\n  [essentialMissing,   'ESSENTIAL missing',   20, '#dc2626'],\n  [recommendedMissing, 'RECOMMENDED missing', 10, '#d97706'],\n  [optionalMissing,    'OPTIONAL missing',     3, '#6b7280'],\n].filter(([count]) => count > 0)\n .map(([count, label, pts, col]) => `\n  <tr>\n    <td style=\"padding:8px 12px;font-family:Georgia,serif;font-size:13px;color:#374151;\n               border-bottom:1px solid #f3f4f6;\">\n      <span style=\"display:inline-block;width:10px;height:10px;background:${col};\n                   border-radius:50%;margin-right:8px;vertical-align:middle;\"></span>\n      ${label} ×${count}\n    </td>\n    <td style=\"padding:8px 12px;font-family:Georgia,serif;font-size:13px;color:#dc2626;\n               font-weight:700;border-bottom:1px solid #f3f4f6;text-align:right;\">\n      −${count * pts} pts\n    </td>\n  </tr>`).join('') || `\n  <tr><td colspan=\"2\" style=\"padding:8px 12px;font-family:Georgia,serif;font-size:13px;\n    color:#16a34a;font-style:italic;\">No deductions.</td></tr>`;\n\n// ── Section header helper ──────────────────────────────────\nfunction sectionHeader(num, title) {\n  return `\n  <tr>\n    <td style=\"padding:28px 32px 10px;\">\n      <div style=\"display:flex;align-items:center;gap:12px;margin-bottom:4px;\">\n        <span style=\"font-family:Georgia,serif;font-size:11px;font-weight:700;color:#9ca3af;\n                     letter-spacing:2px;text-transform:uppercase;\">Section ${num}</span>\n      </div>\n      <h2 style=\"margin:0;font-family:Georgia,serif;font-size:18px;font-weight:700;\n                 color:#111827;border-bottom:2px solid #111827;padding-bottom:8px;\">${title}</h2>\n    </td>\n  </tr>`;\n}\n\n// ── HTML Email ─────────────────────────────────────────────\nconst emailBody = `<!DOCTYPE html>\n<html lang=\"en\">\n<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\">\n<title>Contract Review Report</title></head>\n<body style=\"margin:0;padding:0;background:#f3f4f6;font-family:Georgia,serif;\">\n\n<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f3f4f6;padding:32px 0;\">\n<tr><td align=\"center\">\n<table width=\"640\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:640px;width:100%;\">\n\n  <!-- HEADER -->\n  <tr>\n    <td style=\"background:#111827;border-radius:10px 10px 0 0;padding:28px 32px;\">\n      <p style=\"margin:0 0 4px;font-family:Georgia,serif;font-size:11px;font-weight:700;\n                color:#9ca3af;letter-spacing:3px;text-transform:uppercase;\">Contract Intelligence Report</p>\n      <h1 style=\"margin:0 0 12px;font-family:Georgia,serif;font-size:22px;font-weight:700;color:#ffffff;\">${fileName || 'Contract'}</h1>\n      <span style=\"font-family:Georgia,serif;font-size:12px;color:#9ca3af;margin-right:16px;\">📄 ${(fileType || 'UNKNOWN').toUpperCase()}</span>\n      <span style=\"font-family:Georgia,serif;font-size:12px;color:#9ca3af;margin-right:16px;\">🗂 ${contractType || 'Unknown Type'}</span>\n      <span style=\"font-family:Georgia,serif;font-size:12px;color:#9ca3af;\">🕒 ${new Date().toLocaleString()}</span>\n    </td>\n  </tr>\n\n  <!-- SCORE BANNER -->\n  <tr>\n    <td style=\"background:#1f2937;padding:24px 32px;border-bottom:1px solid #374151;\">\n      <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n        <tr>\n          <td style=\"vertical-align:middle;\" width=\"150\">${scoreRing}</td>\n          <td style=\"vertical-align:middle;padding-left:24px;\">\n            <p style=\"margin:0 0 6px;font-family:Georgia,serif;font-size:11px;font-weight:700;\n                      color:#9ca3af;letter-spacing:2px;text-transform:uppercase;\">Safety Assessment</p>\n            <p style=\"margin:0 0 10px;font-family:Georgia,serif;font-size:22px;font-weight:700;\n                      color:${gradeColor(grade)};\">${scoreLabel}</p>\n            <span style=\"background:${signColor(shouldSign)};display:inline-block;padding:6px 16px;\n                      border-radius:20px;font-family:Georgia,serif;font-size:13px;font-weight:700;\n                      color:#fff;letter-spacing:.5px;\">${shouldSign}</span>\n          </td>\n        </tr>\n      </table>\n    </td>\n  </tr>\n\n  <!-- BOTTOM LINE -->\n  <tr>\n    <td style=\"background:#fef9c3;padding:16px 32px;border-bottom:2px solid #fde047;\">\n      <p style=\"margin:0;font-family:Georgia,serif;font-size:14px;color:#713f12;line-height:1.6;\">\n        <strong>⚠ Bottom Line:</strong> ${bottomLine}\n      </p>\n    </td>\n  </tr>\n\n  <!-- MAIN BODY -->\n  <tr><td style=\"background:#ffffff;border-radius:0 0 10px 10px;\">\n    <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n\n      ${sectionHeader(1, 'Contract Details')}\n      <tr><td style=\"padding:0 32px 24px;\">\n        <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"\n               style=\"border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;\">\n          <tr style=\"background:#f9fafb;\">\n            <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:12px;font-weight:700;\n                       color:#6b7280;letter-spacing:1px;text-transform:uppercase;width:36%;\n                       border-bottom:1px solid #e5e7eb;\">Field</td>\n            <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:12px;font-weight:700;\n                       color:#6b7280;letter-spacing:1px;text-transform:uppercase;\n                       border-bottom:1px solid #e5e7eb;\">Value</td>\n          </tr>\n          <tr>\n            <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:13px;color:#6b7280;\n                       font-weight:600;border-bottom:1px solid #f3f4f6;\">Contract Type</td>\n            <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:13px;color:#1f2937;\n                       border-bottom:1px solid #f3f4f6;\">${contractType}</td>\n          </tr>\n          <tr>\n            <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:13px;color:#6b7280;\n                       font-weight:600;border-bottom:1px solid #f3f4f6;\">Confidence</td>\n            <td style=\"padding:10px 14px;font-family:Georgia,serif;font-size:13px;color:#1f2937;\n                       border-bottom:1px solid #f3f4f6;\">${Math.round((confidence || 0) * 100)}%</td>\n          </tr>\n          ${clauseRows}\n        </table>\n      </td></tr>\n\n      ${sectionHeader(2, 'Your Top 3 Actions')}\n      <tr><td style=\"padding:0 32px 24px;\">${actionItems}</td></tr>\n\n      ${sectionHeader(3, 'Plain English Summary')}\n      <tr><td style=\"padding:0 32px 24px;\">\n        <div style=\"background:#f9fafb;border-radius:8px;padding:16px 20px;border-left:4px solid #111827;\">\n          <p style=\"margin:0;font-family:Georgia,serif;font-size:14px;color:#374151;line-height:1.8;\">\n            ${plainEnglishSummary || 'No summary available.'}\n          </p>\n        </div>\n      </td></tr>\n\n      ${sectionHeader(4, `Risks & Warnings (${riskBreakdown.length} found)`)}\n      <tr><td style=\"padding:0 32px 24px;\">${riskCards}</td></tr>\n\n      ${sectionHeader(5, `Missing Protections (${missingProtectionsPlain.length} found)`)}\n      <tr><td style=\"padding:0 32px 24px;\">${missingCards}</td></tr>\n\n      ${sectionHeader(6, 'Score Breakdown')}\n      <tr><td style=\"padding:0 32px 28px;\">\n        <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"\n               style=\"border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;\">\n          <tr style=\"background:#f9fafb;\">\n            <td style=\"padding:10px 12px;font-family:Georgia,serif;font-size:12px;font-weight:700;\n                       color:#6b7280;letter-spacing:1px;text-transform:uppercase;\n                       border-bottom:1px solid #e5e7eb;\">Deduction Reason</td>\n            <td style=\"padding:10px 12px;font-family:Georgia,serif;font-size:12px;font-weight:700;\n                       color:#6b7280;letter-spacing:1px;text-transform:uppercase;\n                       border-bottom:1px solid #e5e7eb;text-align:right;\">Points</td>\n          </tr>\n          <tr>\n            <td style=\"padding:10px 12px;font-family:Georgia,serif;font-size:13px;color:#374151;\n                       border-bottom:1px solid #f3f4f6;\">Base Score</td>\n            <td style=\"padding:10px 12px;font-family:Georgia,serif;font-size:13px;font-weight:700;\n                       color:#16a34a;border-bottom:1px solid #f3f4f6;text-align:right;\">100 pts</td>\n          </tr>\n          ${deductionRows}\n          <tr style=\"background:#f9fafb;\">\n            <td style=\"padding:12px;font-family:Georgia,serif;font-size:14px;font-weight:700;color:#111827;\">Final Score</td>\n            <td style=\"padding:12px;font-family:Georgia,serif;font-size:18px;font-weight:700;\n                       color:${gradeColor(grade)};text-align:right;\">${safetyScore}/100 — ${grade}</td>\n          </tr>\n        </table>\n      </td></tr>\n\n    </table>\n  </td></tr>\n\n  <!-- FOOTER -->\n  <tr><td style=\"padding:20px 0;text-align:center;\">\n    <p style=\"margin:0;font-family:Georgia,serif;font-size:12px;color:#9ca3af;\">\n      Contract Review Agent · Powered by Claude (Anthropic)\n    </p>\n    <p style=\"margin:4px 0 0;font-family:Georgia,serif;font-size:11px;color:#d1d5db;\">\n      Session: ${sessionId || 'N/A'} · ${new Date().toISOString()}\n    </p>\n  </td></tr>\n\n</table>\n</td></tr>\n</table>\n</body></html>`;\n\nreturn [{\n  json: {\n    sessionId,\n    structuredOutput,\n    emailBody,\n    emailSubject: `Contract Review: ${fileName} — Score ${safetyScore}/100 [${grade} · ${scoreLabel}]`,\n    safetyScore,\n    grade,\n    scoreLabel,\n    shouldSign,\n    contractType,\n    riskCount: riskBreakdown.length,\n    missingCount: missingProtectionsPlain.length,\n    fileName\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2760, 0],
+      "id": "node-assemble",
+      "name": "Assemble Final Report"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.recipientEmail || 'you@example.com' }}",
+        "subject": "={{ $json.emailSubject }}",
+        "message": "={{ $json.emailBody }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [3020, 0],
+      "id": "node-send-email",
+      "name": "Send Email Report",
+      "credentials": { "gmailOAuth2": { "id": "gmail-creds", "name": "Gmail" } }
+    }
+  ],
+  "connections": {
+    "Google Drive Trigger": {
+      "main": [[{ "node": "Download File", "type": "main", "index": 0 }]]
+    },
+    "Download File": {
+      "main": [[{ "node": "Validate & Fingerprint", "type": "main", "index": 0 }]]
+    },
+    "Validate & Fingerprint": {
+      "main": [[{ "node": "Route by File Type", "type": "main", "index": 0 }]]
+    },
+    "Route by File Type": {
+      "main": [
+        [{ "node": "Extract PDF Text",  "type": "main", "index": 0 }],
+        [{ "node": "Extract DOCX Text", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract PDF Text": {
+      "main": [[{ "node": "Merge Extracted Text", "type": "main", "index": 0 }]]
+    },
+    "Extract DOCX Text": {
+      "main": [[{ "node": "Merge Extracted Text", "type": "main", "index": 0 }]]
+    },
+    "Merge Extracted Text": {
+      "main": [[{ "node": "AI Agent: Classify Contract", "type": "main", "index": 0 }]]
+    },
+    "AI Agent: Classify Contract": {
+      "main": [[{ "node": "Parse Classification Result", "type": "main", "index": 0 }]]
+    },
+    "Parse Classification Result": {
+      "main": [[{ "node": "AI Agent: Extract Clauses", "type": "main", "index": 0 }]]
+    },
+    "AI Agent: Extract Clauses": {
+      "main": [[{ "node": "Parse: Extracted Clauses", "type": "main", "index": 0 }]]
+    },
+    "Parse: Extracted Clauses": {
+      "main": [[{ "node": "AI Agent: Detect Risks", "type": "main", "index": 0 }]]
+    },
+    "AI Agent: Detect Risks": {
+      "main": [[{ "node": "Parse: Detect Risks", "type": "main", "index": 0 }]]
+    },
+    "Parse: Detect Risks": {
+      "main": [[{ "node": "AI Agent: Missing Protections", "type": "main", "index": 0 }]]
+    },
+    "AI Agent: Missing Protections": {
+      "main": [[{ "node": "Parse: Missing Protections", "type": "main", "index": 0 }]]
+    },
+    "Parse: Missing Protections": {
+      "main": [[{ "node": "AI Agent: Plain English Translation", "type": "main", "index": 0 }]]
+    },
+    "AI Agent: Plain English Translation": {
+      "main": [[{ "node": "Parse: Plain English", "type": "main", "index": 0 }]]
+    },
+    "Parse: Plain English": {
+      "main": [[{ "node": "Calculate Safety Score", "type": "main", "index": 0 }]]
+    },
+    "Calculate Safety Score": {
+      "main": [[{ "node": "Assemble Final Report", "type": "main", "index": 0 }]]
+    },
+    "Assemble Final Report": {
+      "main": [[{ "node": "Send Email Report", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [{ "name": "Contract Review" }],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,313 @@
+{
+  "name": "Omni Know",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a smart, reliable personal assistant available via Telegram. You have access to the following tools and must use them intelligently to answer any question:\n\n- **SerpAPI**: Use for anything that requires current, real-time, or recent information — news, prices, events, people, businesses, rankings, sports scores, and anything that may have changed recently.\n- **Wikipedia**: Use for factual background knowledge, historical information, definitions, biographies, and well-established topics.\n- **Calculator**: Use for any math — arithmetic, percentages, unit conversions, financial calculations, or anything numerical.\n\n**How you behave**\n- Answer every question fully and directly. Never refuse a reasonable request.\n- Always pick the right tool for the job. For recent info, use SerpAPI. For established facts, use Wikipedia. For numbers, use the Calculator. Use multiple tools in one response if needed.\n- Keep responses clear and conversational — this is a chat interface, not a document editor. Avoid unnecessary headers or markdown that doesn't render well in Telegram.\n- Be concise but complete. Don't pad answers. Don't leave gaps.\n- Remember the conversation history and refer back to it when relevant.\n- If a question is ambiguous, make a reasonable assumption and answer it, then note your assumption briefly.\n- Today's timezone is Africa/Lagos (WAT, UTC+1). Factor this in for any time-sensitive queries."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        976,
+        96
+      ],
+      "id": "46579026-b213-429a-b0ac-84189fe5b006",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-sonnet-4-20250514",
+          "mode": "list",
+          "cachedResultName": "Claude Sonnet 4"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        784,
+        320
+      ],
+      "id": "23ba1c15-9418-4026-a15f-9216b16ffa23",
+      "name": "Anthropic Chat Model",
+      "credentials": {
+        "anthropicApi": {
+          "id": "K4fErlXLVpqDW58G",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.toolCalculator",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        320
+      ],
+      "id": "d5c686cc-89fd-4e1d-bb14-e7652be3caa8",
+      "name": "Calculator"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolSerpApi",
+      "typeVersion": 1,
+      "position": [
+        1168,
+        320
+      ],
+      "id": "408b6c0d-3f09-40cf-8997-a9938adedf8d",
+      "name": "SerpAPI",
+      "credentials": {
+        "serpApi": {
+          "id": "Lc4lTblJ3TDFTnz6",
+          "name": "SerpAPI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": false
+        }
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        112,
+        96
+      ],
+      "id": "8ff2b051-6b7e-4ec9-846c-6672ea6709d7",
+      "name": "Telegram Trigger",
+      "webhookId": "f0437ad7-3bea-49c6-9742-4bf53ff7c4f6",
+      "credentials": {
+        "telegramApi": {
+          "id": "3au5NppJZeqOaRdW",
+          "name": "Omni Bot"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.toolWikipedia",
+      "typeVersion": 1,
+      "position": [
+        1296,
+        320
+      ],
+      "id": "74b33dde-bbc9-4d7c-a282-86ded6e7403c",
+      "name": "Wikipedia"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $json.output }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1504,
+        96
+      ],
+      "id": "4918ba2c-5e61-4cf8-8b9f-4b3f7a9ca8c4",
+      "name": "Send Reply",
+      "webhookId": "9a5829a3-79db-4dce-9b22-3e811264e98a",
+      "credentials": {
+        "telegramApi": {
+          "id": "3au5NppJZeqOaRdW",
+          "name": "Omni Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Telegram Trigger').item.json.message.chat.id }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        912,
+        320
+      ],
+      "id": "fb194b9b-e465-4fca-9c0c-5a7ef04709d3",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "chatInput-assign",
+              "name": "chatInput",
+              "value": "={{ $('Telegram Trigger').item.json.message.text }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        624,
+        80
+      ],
+      "id": "17ac2885-455c-4ef1-bd89-5db3ecfe3f9d",
+      "name": "Map to chatInput"
+    },
+    {
+      "parameters": {
+        "operation": "sendChatAction",
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        352,
+        80
+      ],
+      "id": "410704e2-7830-4f4d-bc95-0e1bc777b869",
+      "name": "Typing Indicator1",
+      "webhookId": "39bc30bb-fede-4b2a-8bdd-674fc049cf7c",
+      "credentials": {
+        "telegramApi": {
+          "id": "3au5NppJZeqOaRdW",
+          "name": "Omni Bot"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculator": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SerpAPI": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Typing Indicator1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wikipedia": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map to chatInput": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Typing Indicator1": {
+      "main": [
+        [
+          {
+            "node": "Map to chatInput",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "17006318-4136-4163-a3d1-22256c60c7de",
+  "meta": {
+    "instanceId": "e1192d852f6a38d336be2f732e2cd231545a7e06cb7c87128e32408b20ec4958"
+  },
+  "id": "cKOAV5WZJsHPv1CP",
+  "tags": [
+    {
+      "updatedAt": "2026-05-06T18:35:39.818Z",
+      "createdAt": "2026-05-06T18:35:39.818Z",
+      "id": "5iC9D0GJGyxMJ5I9",
+      "name": "Portfolio"
+    }
+  ]
+}
